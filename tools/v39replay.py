@@ -7,7 +7,7 @@ Image reads (1E 47) are read transfer by transfer using the geometry of
 the 1E 41 actually sent, so patched scan parameters work.
 
 usage: v39replay.py capture.bin [options]
-  --out FILE            save the data of the final (largest) image read
+  --out FILE            save the data of the last image read (the scan itself)
   --dump PREFIX         save every image read as PREFIX.<txn>.raw
   --patch-shading C     replace the shading table upload by constant C
   --shading-exact       recompute shading table, 1E 42 and 1E 41 bytes 11/15
@@ -46,8 +46,7 @@ def main():
             idx, kvs = sys.argv[k + 1].split(":")
             patches[int(idx)] = {int(x.split("=")[0]): int(x.split("=")[1], 16) for x in kvs.split(",")}
     ts = list(transactions(cap))
-    sizes = [sum(len(p) for d, p in t[1:] if d == "<") for t in ts]
-    final = max((i for i, t in enumerate(ts) if t[0][1] == b"\x1e\x47"), key=lambda i: sizes[i])
+    final = max(i for i, t in enumerate(ts) if t[0][1] == b"\x1e\x47")   # last image read
     dev = V39(open_transport())
     if dev.status() & 0x40:
         dev.wait_idle()

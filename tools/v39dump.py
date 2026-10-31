@@ -54,8 +54,12 @@ def records(path):
     while pos + 5 <= len(data):
         d = chr(data[pos])
         (n,) = struct.unpack_from("<I", data, pos + 1)
-        yield d, data[pos + 5 : pos + 5 + n]
+        p = data[pos + 5 : pos + 5 + n]
         pos += 5 + n
+        if d == "#":    # stripped capture (v39seq.py): device payload, length only
+            yield "<", bytes(struct.unpack("<I", p)[0])
+        else:
+            yield d, p
 
 
 def transactions(path):

@@ -181,7 +181,7 @@ same value appears in status bits. **[inferred]**
 
 | op | shape | param | notes |
 |---|---|---|---|
-| `1E 01` | S | 6 bytes: `u16 mode, u32 distance` | move the carriage. Values seen: `10 00 30 00 00 00` (calibration), `00 10 A1 09 00 00`, and to scan start `09 00 08 07 00 00` (300 dpi colour, y=2"), `0B 00 08 07` (300 gray), `08 00 58 02` (600, y=2"), `05 00 F0 00` (1200, y=2"). The units depend on `mode`. **[inferred]** |
+| `1E 01` | S | 6 bytes: `u16 mode, u32 steps` | motor command; steps are **1/1200"**. `mode 0x1000` = fast move (positioning to the scan start). Any other mode = motor speed profile for the next pass, with `steps` = the length of that pass. See §7.5 for the mode codes and §7.1 for the formulas. **[confirmed]** |
 | `1E 05` | A | — | return to home. Poll `1B 03` until `58 00` turns into `18 00` (≈1.2 s). **[confirmed]** |
 | `1E 11` | S | 1 byte (`04`) | lamp/LED power on; the host waits ~30 ms afterwards. **[inferred]** |
 | `1E 08` | SG | 1 byte (`09`) → 4 bytes (`E6 00 00 00`) | **[unknown]**, part of the calibration move |
@@ -287,15 +287,26 @@ Status polls (`1B 03`) between commands are omitted.
    * store the results with `1E 84` type `09` to `0x021FFF00` / `0x021FFF10`
    * Otherwise (cache hit) it just reads `0x021FFF00` back and programs `1E 31`.
 4. **Dark + white reference:** a 32-line 16-bit dark pass (LED off), then
-   `1E 42` with the black levels, `1E 01 10 00 30 00 00 00` (a short move
-   onto the white calibration strip under the lid edge), then a 16-bit
-   white pass (64 lines @300 colour, 192 @300 gray, 32 @600/1200).
+   `1E 42` with the black levels, `1E 01 mode=Mcal steps=48` (the
+   calibration motor mode from §7.5; 48/1200" over the white calibration
+   strip), then a 16-bit white pass (64 lines @300 colour, 192 @300 gray,
+   32 at 600 dpi and above).
 5. **Upload shading:** `1E 84` type `06` to `0x02012000` (W × planes u16), computed as in §7.4.
-6. **Return and position:** `1B 25`, `1E 5A 01`, `1E 08 09`,
-   `1E 01 00 10 A1 09 00 00`, `1E 05` (home; poll until idle).
+6. **Position:** `1B 25`, `1E 5A 01`, `1E 08 09`, then
+   `1E 01 mode=0x1000 steps=S`, then `1E 05`, then poll until idle. S is
+   the distance from the calibration position to the top of the scan
+   area, in 1/1200" (y is the top edge requested in FS W, in inches):
+
+   ```
+   S = round(y · 1200) + 65     at 300 and 600 dpi (gray @300: + 64)
+   S = round(y · 1200) + 174    at 1200, 2400 and 4800 dpi
+   ```
+
+   Checked at y = 0, 1, 2, 3 and 6 inches. **[confirmed]**
 7. **Final setup:** `1E 21`, `1E 22` (mode 2, final LED duties), `1E 42`,
-   `1E 43`, `1E 01` (move to the scan start), `1E 41` (full geometry),
-   `1E A2 01`.
+   `1E 43`, `1E 01 mode=M steps=round(h·1200)` (h = scan height in
+   inches, M = the image-scan motor mode from §7.5), `1E 41` (lines =
+   h · vertical rate, see §7.2), `1E A2 01`.
 8. **Start:** `1E 47`, then read every transfer.
 9. The host sends nothing after the last transfer; the carriage appears to
    return home on its own, with status showing `58 00` until it arrives.
@@ -309,16 +320,21 @@ power-up and ≈2.5 s when the calibration cache hits.
 The device always scans the **full sensor width** at the hardware
 resolution and the host crops. **[confirmed]**
 
-| output mode | hw x-res | W (pixels/line) | hw lines per output line | bytes / raw line |
-|---|---|---|---|---|
-| 300 dpi colour | 300 | 2592 | 2 (600 lpi) | 3 × W = 7776 |
-| 300 dpi gray / line-art | 300 | 2592 | 4 (1200 lpi) | W = 2592 |
-| 600 dpi colour | 600 | 5168 | 1 | 15504 |
-| 1200 dpi colour | 1200 | 10336 | 1 | 31008 |
+| dpi | W (pixels/line) | phase groups k | dummies/half | raw lines per output line | x offset |
+|---|---|---|---|---|---|
+| 300 | 2592 | 1 | 4 | colour 2, gray 4 | 17 |
+| 600 | 5168 | 1 | 0 | 1 | 34 |
+| 1200 | 10336 | 2 | 0 | 1 | 68 |
+| 2400 | 20672 | 4 | 0 | 1 | 136 |
+| 4800 | 41344 | 8 | 0 (not checked) | 1 | 272 |
 
-The interpreter only accepts 300/600/1200/2400 dpi (ESC/I `ESC I` lists
-`R 300, R 600, R 1200, R 2400`). The WIA driver produces 100/150/… dpi by
-resampling on the host. 2400 dpi has not been captured yet.
+Bytes per raw line = W × planes (3 colour, 1 gray), 8-bit. All rows were
+verified against the interpreter's output, colour and gray. The only
+exception is 4800 dpi, which is colour only. **[confirmed]**
+
+The interpreter accepts 300/600/1200/2400/4800 dpi in `FS W` (ESC/I
+`ESC I` lists only up to 2400). The WIA driver produces 100/150/… dpi by
+resampling on the host.
 
 A colour line has **three planes**, R then G then B, each W bytes of 8-bit
 samples. A gray line is one plane. **[confirmed]**
@@ -330,20 +346,22 @@ sensor**: **[confirmed]**
 plane = L0 R0 L1 R1 L2 R2 …     L = pixels 0 … W/2-1, R = pixels W/2 … W-1
 ```
 
-At **1200 dpi** each half additionally arrives as all its even pixels,
-then all its odd pixels (staggered sensor rows, already aligned
-vertically by the device): **[confirmed]**
+At **1200 dpi and above** each half additionally arrives as k phase
+groups (k = dpi/600). The device has already aligned the staggered
+sensor rows vertically: **[confirmed]**
 
 ```
-half = h0 h2 h4 … h(N-2)  h1 h3 h5 … h(N-1)        (N = W/2)
+half = h0 hk h2k …  h1 h(k+1) …  …  h(k-1) h(2k-1) …      (group j = pixels j, j+k, j+2k, …; N/k each)
+k=2 @1200:  h0 h2 h4 … h1 h3 h5 …
 ```
 
 At **300 dpi the last 4 pixels of each half are dummies**: they read as
 zero/saturated, and the shading table holds `0xFFFF`/tiny values there.
 The image is therefore `L[0:1292] + R[0:1292]`, 2584 pixels wide.
 Leaving the dummies in produces a coloured seam at the sensor centre and
-shifts the right half by 4 pixels. At 600 dpi there are no dummies
-(fitted). At 1200 dpi this is not checked yet. **[confirmed @300/600]**
+shifts the right half by 4 pixels. At 600, 1200 and 2400 dpi there are no
+dummies; this was fitted on captures that cross the centre.
+**[confirmed]**
 
 In 8-bit mode the data is **already shading-corrected** by the device
 (§7.4). After unscrambling and dummy removal, the interpreter's output
@@ -353,14 +371,13 @@ equals the raw data within 0.4 (gray) to 1.7 (colour) levels of 255.
 Reference unscramble (numpy):
 
 ```python
-def unscramble(lines, W, stagger, dummy):   # lines: (n, planes, W); dummy=4 @300, 0 @600
+def unscramble(lines, k, dummy):   # lines: (n, planes, W); k, dummy from the table
     left, right = lines[..., 0::2], lines[..., 1::2]
     def fix(h):
-        if stagger:
-            n = h.shape[-1]; out = np.empty_like(h)
-            out[..., 0::2] = h[..., :n // 2]; out[..., 1::2] = h[..., n // 2:]
-            h = out
-        return h[..., :h.shape[-1] - dummy]
+        n = h.shape[-1]; out = np.empty_like(h)
+        for j in range(k):                       # phase group j -> pixels j, j+k, ...
+            out[..., j::k] = h[..., j * n // k:(j + 1) * n // k]
+        return out[..., :n - dummy]
     return np.concatenate([fix(left), fix(right)], axis=-1)
 ```
 
@@ -373,10 +390,13 @@ halftone screen. **[confirmed by comparison]**
 
 Cropping and down-sampling as Epson's interpreter does it: **[confirmed]**
 
-* x: output pixel `x` (at output dpi) = raw pixel `x + 17·(dpi/300)`, so a
-  fixed ≈1.44 mm left margin.
-* y: output row `r` = mean of raw lines `r·k … r·k+k-1`, with k from the
-  table above (2 for 300 dpi colour, 4 for 300 dpi gray).
+* x: output pixel `x` (at output dpi) = unscrambled pixel `x + 17·(dpi/300)`,
+  a fixed ≈1.44 mm left margin. Verified at 300–4800 dpi. x is never
+  sent to the device.
+* y: output row `r` = mean of raw lines `r·v … r·v+v-1`, with v = "raw
+  lines per output line" from the table (2 for 300 dpi colour, 4 for
+  300 dpi gray, otherwise 1). The device is positioned at y with
+  `1E 01 0x1000` (§7.1).
 * Line-art (1-bit) is host-side thresholding of the gray scan; the device
   sees the same commands as gray.
 
@@ -491,6 +511,62 @@ inputs are measured on every scan (dark, white, AFE and LED readings),
 and the constants (windows 896…1152 and 211…219, 4 white groups, 8-pixel
 boxes) are fixed in Epson's model-wide interpreter.
 
+### 7.5 Mode tables
+
+Values per hardware resolution, collected from the captures in `ref/`.
+A complete command sequence for each mode, with every parameter block,
+is in `ref/<dpi>-<mode>-<pos>.txt` (see `ref/README.md`). Copy blocks from
+there where this table says "see ref".
+
+| | 300 | 600 | 1200 | 2400 | 4800 |
+|---|---|---|---|---|---|
+| W (`1E 41` end = 351 + W) | 2592 | 5168 | 10336 | 20672 | 41344 |
+| `1E 21` | `0x210` | `0x480` | `0x900` | `0x1200` | `0x2400` |
+| motor mode, calibration move (`Mcal`, 48 steps) | `0x10` | `0x0F` | `0x0E` | `0x0D` | `0x0C` |
+| motor mode, image scan colour / gray | `0x09` / `0x0B` | `0x08` / `0x0A` | `0x05` / `0x06` | `0x03` / `0x04` | `0x01` / (`0x02`?) |
+| start-position offset (steps, §7.1) | 65 (gray 64) | 65 | 174 | 174 | 174 |
+| `1E 41` byte 9 (image) | 1 | 1 | 1 | 2 | 4 |
+| LED start duty | 135 | 320 | 640 | 900 | 1800 |
+| raw lines per output line colour / gray | 2 / 4 | 1 / 1 | 1 / 1 | 1 / 1 | 1 / – |
+
+`1E 22` blocks (`u16 mode, u32 a[3], u32 b[3], u16 c[3], u16 duty[3], u16 flag`):
+
+| dpi | mode 1 (calibration) a / b / c | mode 2 (scan) a / b / c |
+|---|---|---|
+| 300 | `D6 41E A90` / `2F3 965 A91` / `2A3`×3 | `D6`×3 / `A55`×3 / `2A3`×3 |
+| 600 | `D6 874 1792` / `5D7 14F5 1793` / `640`×3 | `D6`×3 / `1757`×3 / `640`×3 |
+| 1200 | `D6 FF4 2E12` / `AD7 28F5 2E13` / `C80`×3 | `D6`×3 / `2DD7`×3 / `C80`×3 |
+| 2400 | `D6 160C 405A` / `EE7 3935 405B` / `1194`×3 | `D6`×3 / `401F`×3 / `1194`×3 |
+| 4800 | `D6 2B24 7FA2` / `1CF7 7175 7FA3` / `2328`×3 | `D6`×3 / `7F67`×3 / `2328`×3 |
+
+Mode 1 is used for the AFE/LED/reference passes. Mode 2 is used for
+the LED exposure reads and the image scan, with `duty` = the calibrated
+duties (`0,0,0` = LEDs off).
+
+Final image-scan `1E 41`, bytes 8–17 and 18 (bytes 11 and 15 are the
+computed shading values from §7.4; typical values shown):
+
+| mode | bytes 8–17 | byte 18 (lines/transfer) |
+|---|---|---|
+| 300 colour | `01 01 02 80 80 00 00 81 80 A0` | 8 |
+| 300 gray | `01 01 01 80 80 01 00 81 80 A0` | 25 |
+| 600 colour | `01 01 02 80 80 00 00 72 80 A0` | 4 |
+| 600 gray | `01 01 02 80 80 01 00 72 80 A0` | 12 |
+| 1200 colour / gray | `01 01 01 80 80 0g 00 72 80 A0` (g = 0 colour, 1 gray) | 2 / 6 |
+| 2400 colour / gray | `01 02 01 80 80 0g 00 72 80 A0` | 1 / 3 |
+| 4800 colour | `01 04 01 80 80 00 00 72 80 A0` | 1 |
+
+Lines per transfer = max(1, floor(65535 / bytes per raw line)) in every
+capture. **[confirmed]** The AFE, LED, dark and white passes use their
+own blocks (byte 8 = `00` for 16-bit). These follow the same pattern
+with byte 9 per resolution. They are listed in order in each `ref/*.txt`.
+
+`1E 57` (parameter record) for a scan: `u32 dpi, u32 vertical scan dpi
+(dpi × raw-lines-per-output-line), u32 x, u32 y × that factor, u32 W,
+u32 lines, u8 colour mode (0x13 colour / 0x00 gray), u8 depth (8),
+…`. The rest is copied from the ESC/I `FS W` block. It looks like
+bookkeeping only. A driver can send the same layout. **[inferred]**
+
 ## 8. Things that are still open
 
 * Exact meaning of the `1E 22` timing fields, `1E 41` bytes 9, 10, 12,
@@ -499,10 +575,16 @@ boxes) are fixed in Epson's model-wide interpreter.
 * The device gain K, and whether `1E 43` does more than scale the LED
   targets.
 * The exact rounding of the LED duty update.
-* Dummy pixels at 1200 dpi.
+* Dummy pixels at 4800 dpi, and 4800 dpi gray (not captured).
 * In 16-bit output mode a final-geometry scan starts ≈1.2" further down
   the page than the same scan in 8-bit mode. Not understood.
-* 2400 dpi and 4800 dpi (`FS I` reports max 4800) layouts.
+* Firmware upload (§4.2) and the pyusb transport have not been run by
+  our own code yet. On Windows, Epson's service uploads the firmware at
+  plug-in. This is the first thing to test on Linux.
+* A complete scan driven only by our own logic, with no replayed
+  sequence, has not been done yet. All pieces are documented. The
+  replays with `--shading-exact` cover everything except the per-mode
+  sequencing.
 * Button bit mapping (`1E 85`); there are 4 buttons: Start/Copy/Send/PDF.
 * Behaviour on errors / cover open / carriage stuck.
 
@@ -544,7 +626,7 @@ the host does that before `INTInit` (§4.2).
 
 | off | field | accepted |
 |---|---|---|
-| 0 | u32 x-res | 300, 600, 1200, 2400 (100/150 → NAK) |
+| 0 | u32 x-res | 300, 600, 1200, 2400, 4800 (100/150 → NAK) |
 | 4 | u32 y-res | same as x |
 | 8, 12 | u32 x, y offset (pixels at res) | |
 | 16, 20 | u32 width, height (pixels) | |
@@ -586,4 +668,9 @@ Build `esitrace` with LLVM: `clang -O1 -o esitrace.exe tools/esitrace.c`.
   shading table with a constant (`--patch-shading C`), recompute the
   table, `1E 42` and `1E 41` bytes 11/15 with the exact §7.4 algorithm
   from the replay's own reference passes (`--shading-exact`), and dump
-  every image read. Run it with `uv run --with numpy`.
+  every image read. Run it with `uv run --with numpy`. It accepts both
+  full captures and the stripped `ref/*.v39` files.
+* `tools/v39seq.py`: turns a capture into a `ref/` pair: a readable
+  `.txt` command sequence and a stripped `.v39` with image data removed.
+* `ref/`: reference sequences for every mode (300–4800 dpi, colour and
+  gray, several positions). See `ref/README.md`.

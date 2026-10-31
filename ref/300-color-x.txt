@@ -1,0 +1,184 @@
+# reference sequence exported from cap2/p300c_x.bin
+# FS W: 300 dpi color, x=1500 y=300 w=600 h=60 (pixels at 300 dpi = 5.000" 1.000" 2.000" 0.200")
+# FS W block: 2c 01 00 00 2c 01 00 00 dc 05 00 00 2c 01 00 00 58 02 00 00 3c 00 00 00 13 08 00 00 00 03 00 00 00 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+1b 03 status      poll x4 (last reply 18 00)
+1e 83 mem-read    <ack  > 0b 00 00 00 00 00 0a 00 00 00  < 00 00 00 00 00 00 00 00 00 00
+1e 84 mem-write   <ack  > 03 00 00 fc 1f 02 00 01 00 00  > <identity LUT, 256 bytes>  <ack
+1e 84 mem-write   <ack  > 03 00 00 fd 1f 02 00 01 00 00  > <identity LUT, 256 bytes>  <ack
+1e 84 mem-write   <ack  > 03 00 00 fe 1f 02 00 01 00 00  > <identity LUT, 256 bytes>  <ack
+1b 03 status      poll x33 (last reply 18 00)
+1e e4 reg-e4      <ack  > 0b 00 04 00  <ack  < 14 17 43 01
+1b 03 status      poll x1 (last reply 18 00)
+1b 40 reset       <ack
+1b 03 status      poll x5 (last reply 18 00)
+1e 53 get-params  < 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+1e 57 set-params  <ack  > 2c 01 00 00 58 02 00 00 dc 05 00 00 58 02 00 00 20 0a 00 00 78 00 00 00 13 08 00 00 00 03 00 00 00 80 00 00 00 00 00 00 00 00  <ack
+1e a2 set-a2      <ack  > 01  <ack
+1e 87 get-87      <ack  > 00  < 01 00 f6 ff e9 ff
+1b 25 read-reg32  <ack  > 44 f8 37 00  < 28 00 00 00
+1e 83 mem-read    <ack  > 09 00 10 ff 1f 02 10 00 00 00  < 00 00 00 00 2c 01 00 00 11 00 06 00 01 00 13 01
+1e 84 mem-write   <ack  > 09 00 10 ff 1f 02 10 00 00 00  > <data, 16 bytes>  <ack
+1e 31 set-afe     <ack  > 80 00 80 00 80 00 80 00 80 00 80 00 3a 00 3a 00 3a 00  <ack
+1e a2 set-a2      <ack  > 00  <ack
+1e 5a set-5a      <ack  > 00  <ack
+1e 11 lamp        <ack  > 04  <ack
+1e 21 set-21      <ack  > 10 02 00 00  <ack
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 00 00 00 00 00 00 00 00  <ack
+1e 42 set-42      <ack  > 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  <ack
+1e 43 set-43      <ack  > 00 80 00 80 00 80 db 7f e2 7f 00 80  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1e 92 get-afe     < 80 00 00 00 00 00 80 00 00 00 00 00 3a 00 00 00 00 00
+1e 22 set-led     <ack  > 01 00 d6 00 00 00 1e 04 00 00 90 0a 00 00 f3 02 00 00 65 09 00 00 91 0a 00 00 a3 02 a3 02 a3 02 87 00 87 00 87 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 31 set-afe     <ack  > 80 00 80 00 80 00 80 00 80 00 80 00 3a 00 3a 00 3a 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > c0 00 c0 00 c0 00 c0 00 c0 00 c0 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > a0 00 a0 00 a0 00 a0 00 a0 00 a0 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > 90 00 90 00 90 00 90 00 90 00 90 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > 88 00 88 00 88 00 88 00 88 00 88 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > 84 00 84 00 84 00 84 00 84 00 84 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > 86 00 86 00 86 00 86 00 86 00 86 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x1 (last reply 18 00)
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 87 00 87 00 87 00 00 00  <ack
+1e a2 set-a2      <ack  > 01  <ack
+1e 5a set-5a      <ack  > 00  <ack
+1e 21 set-21      <ack  > 10 02 00 00  <ack
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 87 00 87 00 87 00 00 00  <ack
+1e 42 set-42      <ack  > 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  <ack
+1e 43 set-43      <ack  > 00 80 00 80 00 80 db 7f e2 7f 00 80  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 01 01 02 00 00 00 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 87 00 87 00 87 00 00 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 01 01 02 00 00 00 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x31112), 7776 B/line, 8-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 4c 01 04 01 aa 00 00 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 01 01 02 00 00 00 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x31112), 7776 B/line, 8-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 40 01 1f 01 aa 00 00 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 01 01 02 00 00 00 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x31112), 7776 B/line, 8-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 40 01 24 01 aa 00 00 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 01 01 02 00 00 00 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x31112), 7776 B/line, 8-bit
+1b 03 status      poll x1 (last reply 18 00)
+1e a2 set-a2      <ack  > 00  <ack
+1e 5a set-5a      <ack  > 00  <ack
+1e 21 set-21      <ack  > 10 02 00 00  <ack
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 40 01 24 01 aa 00 00 00  <ack
+1e 42 set-42      <ack  > 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  <ack
+1e 43 set-43      <ack  > 00 80 00 80 00 80 db 7f e2 7f 00 80  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1e 92 get-afe     < 86 00 00 00 00 00 86 00 00 00 00 00 3a 00 00 00 00 00
+1e 31 set-afe     <ack  > 80 00 80 00 80 00 80 00 80 00 80 00 3a 00 3a 00 3a 00  <ack
+1e 22 set-led     <ack  > 01 00 d6 00 00 00 1e 04 00 00 90 0a 00 00 f3 02 00 00 65 09 00 00 91 0a 00 00 a3 02 a3 02 a3 02 40 01 24 01 aa 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 31 set-afe     <ack  > 80 00 80 00 80 00 80 00 80 00 80 00 3a 00 3a 00 3a 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > c0 00 c0 00 c0 00 c0 00 c0 00 c0 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > a0 00 a0 00 a0 00 a0 00 a0 00 a0 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > 90 00 90 00 90 00 90 00 90 00 90 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > 88 00 88 00 88 00 88 00 88 00 88 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > 84 00 84 00 84 00 84 00 84 00 84 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 31 set-afe     <ack  > 86 00 86 00 86 00 86 00 86 00 86 00 3a 00 3a 00 3a 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 04 00 00 00 00 01 02 00 00 01 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  4 lines, 1 transfers (1x20744), 5184 B/line, 16-bit
+1b 03 status      poll x1 (last reply 18 00)
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 40 01 24 01 aa 00 00 00  <ack
+1e 84 mem-write   <ack  > 09 00 00 ff 1f 02 0c 00 00 00  > <data, 12 bytes>  <ack
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 40 01 24 01 aa 00 01 00  <ack
+1e a2 set-a2      <ack  > 00  <ack
+1e 5a set-5a      <ack  > 00  <ack
+1e 21 set-21      <ack  > 10 02 00 00  <ack
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 40 01 24 01 aa 00 01 00  <ack
+1e 42 set-42      <ack  > 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  <ack
+1e 43 set-43      <ack  > 00 80 00 80 00 80 db 7f e2 7f 00 80  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 20 00 00 00 00 01 02 00 00 00 00 00 80 00 04 00 00 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 20 00 00 00 00 01 02 00 00 00 00 00 80 00 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  32 lines, 8 transfers (8x62216), 15552 B/line, 16-bit
+1b 03 status      poll x1 (last reply 18 00)
+1e 87 get-87      <ack  > 00  < 01 00 f6 ff e9 ff
+1e a2 set-a2      <ack  > 01  <ack
+1e 5a set-5a      <ack  > 00  <ack
+1e 21 set-21      <ack  > 10 02 00 00  <ack
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 40 01 24 01 aa 00 00 00  <ack
+1e 42 set-42      <ack  > 00 00 00 00 00 00 41 04 02 04 41 04 02 04 41 04 02 04  <ack
+1e 43 set-43      <ack  > 00 80 00 80 00 80 db 7f e2 7f 00 80  <ack
+1e 01 move        <ack  > 10 00 30 00 00 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 40 00 00 00 00 04 03 40 00 00 00 00 80 80 04 00 00 00  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  64 lines, 16 transfers (16x62216), 15552 B/line, 16-bit
+1b 03 status      poll x2 (last reply 18 00)
+1e 84 mem-write   <ack  > 06 00 00 20 01 02 c0 3c 00 00  > <shading table (PROTOCOL.md 7.4), 15552 bytes>  <ack
+1b 25 read-reg32  <ack  > 44 f8 37 00  < 58 00 00 00
+1e 5a set-5a      <ack  > 01  <ack
+1b 25 read-reg32  <ack  > 44 f8 37 00  < 58 00 00 00
+1e 08 query       <ack  > 09  < e6 00 00 00
+1e 01 move        <ack  > 00 10 f1 04 00 00  <ack
+1e 05 home        <ack
+1b 03 status      poll x6 (last reply 18 00)
+1e 21 set-21      <ack  > 10 02 00 00  <ack
+1e 22 set-led     <ack  > 02 00 d6 00 00 00 d6 00 00 00 d6 00 00 00 55 0a 00 00 55 0a 00 00 55 0a 00 00 a3 02 a3 02 a3 02 40 01 24 01 aa 00 00 00  <ack
+1e 42 set-42      <ack  > 05 00 06 00 03 00 41 04 02 04 41 04 02 04 41 04 02 04  <ack
+1e 43 set-43      <ack  > db 7f e2 7f 00 80 db 7f e2 7f 00 80  <ack
+1e 01 move        <ack  > 09 00 f0 00 00 00  <ack
+1e 41 set-scan    <ack  > 5f 01 7f 0b 78 00 00 00 01 01 02 80 80 00 00 81 80 a0 08 00 00 00  <ack
+1e a2 set-a2      <ack  > 01  <ack
+1b 03 status      poll x1 (last reply 18 00)
+1e 47 read-image  120 lines, 15 transfers (15x62216), 7776 B/line, 8-bit
