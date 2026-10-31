@@ -32,12 +32,15 @@ SANE_CONFDIR  ?= /etc/sane.d
 UDEV_RULESDIR ?= /etc/udev/rules.d
 MANDIR        ?= $(DATADIR)/man
 
-# Directory that holds the other SANE backends (libsane-dll.so.1 lives there).
+# Directory that holds the other SANE backends: the first of these that
+# contains any libsane-*.so.1 (Debian/Ubuntu build the dll loader into
+# libsane.so.1, so libsane-dll.so.1 itself is not a reliable marker).
+MULTIARCH := $(strip $(shell $(CC) -print-multiarch 2>/dev/null))
 SANE_LIBDIR ?= $(patsubst %/,%,$(dir $(firstword $(wildcard \
-	/usr/lib64/sane/libsane-dll.so.1 \
-	/usr/lib/$(shell $(CC) -print-multiarch 2>/dev/null)/sane/libsane-dll.so.1 \
-	/usr/lib/sane/libsane-dll.so.1 \
-	/usr/local/lib/sane/libsane-dll.so.1))))
+	$(if $(MULTIARCH),/usr/lib/$(MULTIARCH)/sane/libsane-*.so.1) \
+	/usr/lib64/sane/libsane-*.so.1 \
+	/usr/lib/sane/libsane-*.so.1 \
+	/usr/local/lib/sane/libsane-*.so.1))))
 
 SANEI_OBJS = sanei_usb sanei_config sanei_init_debug sanei_thread sanei_constrain_value
 CONFIG_H   = $(SANE_SRC)/include/sane/config.h

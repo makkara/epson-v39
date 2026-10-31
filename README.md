@@ -28,9 +28,11 @@ from Epson's own server.
   1200 dpi and 4–9 s at 2400 and 4800 dpi; repeat scans in the same mode
   are at the low end.
 
-Tested on Fedora 44 with firmware 1.42 (the version in Epson's current
-driver package). Other Linux distributions should work too; please
-[report](#reporting-problems) how it goes.
+Scanning is tested on Fedora 44 with firmware 1.42 (the version in
+Epson's current driver package). The build, install and firmware steps
+below are also checked on clean Debian 13 and Arch Linux systems. Other
+distributions should work too; please [report](#reporting-problems) how
+it goes.
 
 Not tested: the **Perfection V19** (`04b8:013c`). Epson's Windows
 package for it contains the same firmware and scan code as the V39 one.
@@ -46,13 +48,13 @@ You need about five minutes and an internet connection.
 Fedora:
 
 ```sh
-sudo dnf install gcc make pkgconf-pkg-config libusb1-devel sane-backends 7zip curl
+sudo dnf install gcc make pkgconf-pkg-config libusb1-devel python3 sane-backends 7zip curl
 ```
 
 Debian, Ubuntu, Linux Mint, Raspberry Pi OS:
 
 ```sh
-sudo apt install build-essential pkg-config libusb-1.0-0-dev sane-utils 7zip curl
+sudo apt install build-essential pkg-config libusb-1.0-0-dev python3 sane-utils 7zip curl
 ```
 
 Use `p7zip-full` instead of `7zip` on older releases (Debian 12, Ubuntu 22.04).
@@ -60,7 +62,7 @@ Use `p7zip-full` instead of `7zip` on older releases (Debian 12, Ubuntu 22.04).
 Arch Linux, Manjaro:
 
 ```sh
-sudo pacman -S --needed base-devel pkgconf libusb sane 7zip curl
+sudo pacman -S --needed base-devel pkgconf libusb python sane 7zip curl
 ```
 
 ### 2. Get the code and build it
