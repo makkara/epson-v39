@@ -165,7 +165,7 @@ Regions seen:
 | type | address | length | content |
 |---|---|---|---|
 | `03` | `0x021FFC00` / `0x021FFD00` / `0x021FFE00` | 256 each | 8-bit output LUT (gamma) for R / G / B. ESC/I init writes identity tables. **[confirmed]** |
-| `06` | `0x02012000` | W×3×2 | per-pixel shading coefficients, u16, written after the white-reference scan (15552 bytes at 300 dpi = 2592 px × 3 × 2). **[confirmed size/place, inferred meaning]** |
+| `06` | `0x02012000` | W×P×2 | per-pixel shading table, u16, P planes of W entries in raw (interleaved) pixel order, written after the white-reference scan. The device divides by it (§7.4). **[confirmed]** |
 | `09` | `0x021FFF00` | 12 | calibration cache: AFE offsets as 3 × u32, e.g. `80 00 00 00 76 00 00 00 46 00 00 00`. **[inferred]** |
 | `09` | `0x021FFF10` | 16 | calibration cache key: u32 last resolution, u32 pixel count, then mode bytes (`58 02 00 00 84 03 00 00 11 00 06 00 01 00 13 01`). The interpreter reads it back and skips the slow AFE search when it still matches. **[inferred]** |
 | `0B` | `0x00000000` | 10 | read at init, all zero. **[unknown]** (NVRAM?) |
@@ -195,9 +195,9 @@ same value appears in status bits. **[inferred]**
 |---|---|---|
 | `1E 21` | S | u32 line timing: `0x210` (300 dpi), `0x480` (600), `0x900` (1200). **[inferred]** (pixel clocks per line) |
 | `1E 22` | S | 40 bytes LED/exposure block (below) |
-| `1E 31` | S | 18 bytes AFE: `u16 offset[6]`, `u16 gain[3]` |
-| `1E 92` | Q | → 18 bytes, same layout as `1E 31` (read-back) |
-| `1E 42` | S | 18 bytes **[unknown]**. All zeros during calibration; at scan time e.g. `08 00 13 00 01 00 | 58 04 1D 04 | 58 04 1D 04 | 58 04 1D 04` (300 dpi) |
+| `1E 31` | S | 18 bytes AFE: `u16 offset[6]` (left half R,G,B, right half R,G,B), `u16 gain[3]` (always `0x3A`). **[confirmed]** |
+| `1E 92` | Q | → 18 bytes: `u16 offL, 0, 0, offR, 0, 0, gain, 0, 0` (read-back) **[confirmed]** |
+| `1E 42` | S | 18 bytes: `u16 base[3]` (per colour), then `u16 black_L, black_R` repeated for R, G, B. All zeros during the AFE/LED search. See §7.4. **[confirmed]** |
 | `1E 43` | S | 12 bytes: six u16 near `0x8000`, e.g. `DB 7F E2 7F 00 80 …`; per-channel/half gain, Q15 ≈ 1.0. **[inferred]** |
 
 `1E 22` (40 bytes):
@@ -214,10 +214,7 @@ u16  flag            00 / 01
 **[inferred]** The field grouping follows how the values change with
 resolution and during the exposure search. The exact semantics are unknown.
 
-AFE offset calibration is a binary search on all six offsets: `0x80`,
-`0xC0`, `0xA0`, `0x90`, `0x88`, `0x84`, `0x86`, `0x85`, with gains fixed at
-`0x3A`. Each step takes a 4-line dark read. Six offsets fits two sensor
-halves × three colours (§7.2). **[confirmed sequence, inferred meaning]**
+The AFE offset search and LED exposure search are described in §7.4.
 
 ### 5.5 Scan setup and data
 
@@ -237,14 +234,20 @@ u32 out_res   u32 scan_yres   u32 y_out   u32 y_scan   u32 width_px   u32 lines 
 | 0–1 | u16 first pixel (constant `0x015F` = 351) **[inferred]** | |
 | 2–3 | u16 end pixel = 351 + W | `0B7F` (W=2592 @300), `158F` (5168 @600), `29BF` (10336 @1200) |
 | 4–7 | u32 number of lines | `0x384` = 900 |
-| 8 | LED on (`01`) / off (`00`, dark reference) **[confirmed]** | |
-| 9 | `01` normal; `04` for the long shading-reference pass | |
-| 10 | `02` (300/600 colour), `01` (gray, 1200 colour) **[unknown]** | |
-| 11–12 | `80 80` for image scans, `00 00` for calibration | |
-| 13 | `01` gray / dark 16-bit, `00` colour **[inferred]** | |
+| 8 | **output format**: `00` = 16-bit raw (no shading), `01` = 8-bit. Tested by patching only this byte. **[confirmed]** | |
+| 9 | `01` normal; `04`/`02` for the white-reference pass | |
+| 10 | `02` (300/600 colour), `01` (gray, 1200 colour), `03` (white pass) **[unknown]** | |
+| 11–12 | `80 80` image scan, `40 00` white pass, `00 00` dark/AFE passes | |
+| 13 | `01` gray and AFE dark reads (one plane), `00` colour **[inferred]** | |
 | 14 | `00` | |
 | 15 | `81` @300, `72` @600/1200 **[unknown]** | |
-| 16–17 | `80 A0` image scan, `80 00` calibration | |
+| 16–17 | `80 A0` image scan, `80 80` white pass, `80 00` dark passes | |
+
+Bytes 9–17 together select shading, LED gating and the plane layout.
+Copying the image-scan values onto a calibration pass turns the LEDs on
+and enables shading, so these bits interact. A driver should send the
+exact per-pass blocks listed in §7.1; the individual bits are
+**[unknown]**.
 | 18 | **lines per USB transfer** **[confirmed]** | `08`, `04`, `02`, `19` |
 | 19–21 | `00` | |
 
@@ -282,9 +285,11 @@ Status polls (`1B 03`) between commands are omitted.
    * LED exposure search: `1E 22` with updated `led_duty`, `1E 41` LED on, `1E 47` (4 lines)
    * store the results with `1E 84` type `09` to `0x021FFF00` / `0x021FFF10`
    * Otherwise (cache hit) it just reads `0x021FFF00` back and programs `1E 31`.
-4. **Dark + white reference:** 8 dark lines (LED off, 16-bit), then
-   `1E 01` a short move, then a 64-line white pass (`1E 41` byte 9 = `04`).
-5. **Upload shading:** `1E 84` type `06` to `0x02012000` (W×3 u16).
+4. **Dark + white reference:** a 32-line 16-bit dark pass (LED off), then
+   `1E 42` with the black levels, `1E 01 10 00 30 00 00 00` (a short move
+   onto the white calibration strip under the lid edge), then a 16-bit
+   white pass (64 lines @300 colour, 192 @300 gray, 32 @600/1200).
+5. **Upload shading:** `1E 84` type `06` to `0x02012000` (W × planes u16), computed as in §7.4.
 6. **Return and position:** `1B 25`, `1E 5A 01`, `1E 08 09`,
    `1E 01 00 10 A1 09 00 00`, `1E 05` (home; poll until idle).
 7. **Final setup:** `1E 21`, `1E 22` (mode 2, final LED duties), `1E 42`,
@@ -332,24 +337,38 @@ vertically by the device): **[confirmed]**
 half = h0 h2 h4 … h(N-2)  h1 h3 h5 … h(N-1)        (N = W/2)
 ```
 
-The data is **already shading-corrected** by the device (§5.2 type `06`).
-The interpreter's 8-bit output equals the unscrambled raw data within
-~2–4 levels. The remaining difference is probably the colour/gamma step.
+At **300 dpi the last 4 pixels of each half are dummies**: they read as
+zero/saturated, and the shading table holds `0xFFFF`/tiny values there.
+The image is therefore `L[0:1292] + R[0:1292]`, 2584 pixels wide.
+Leaving the dummies in produces a coloured seam at the sensor centre and
+shifts the right half by 4 pixels. At 600 dpi there are no dummies
+(fitted). At 1200 dpi this is not checked yet. **[confirmed @300/600]**
+
+In 8-bit mode the data is **already shading-corrected** by the device
+(§7.4). After unscrambling and dummy removal, the interpreter's output
+equals the raw data within 0.4 (gray) to 1.7 (colour) levels of 255.
 **[confirmed]**
 
 Reference unscramble (numpy):
 
 ```python
-def unscramble(lines, W, stagger):          # lines: (n, planes, W) uint8
+def unscramble(lines, W, stagger, dummy):   # lines: (n, planes, W); dummy=4 @300, 0 @600
     left, right = lines[..., 0::2], lines[..., 1::2]
     def fix(h):
-        if not stagger:
-            return h
-        n = h.shape[-1]; out = np.empty_like(h)
-        out[..., 0::2] = h[..., :n // 2]; out[..., 1::2] = h[..., n // 2:]
-        return out
+        if stagger:
+            n = h.shape[-1]; out = np.empty_like(h)
+            out[..., 0::2] = h[..., :n // 2]; out[..., 1::2] = h[..., n // 2:]
+            h = out
+        return h[..., :h.shape[-1] - dummy]
     return np.concatenate([fix(left), fix(right)], axis=-1)
 ```
+
+**Noise.** Sensor noise in 8-bit output is ≈0.4 levels in black and
+≈3–5 levels per pixel in mid/bright areas at 300 dpi; it is slightly worse
+in red. Epson's driver output has the same grain: the interpreter does no
+denoising. Its optional "Descreening" / "Unsharp mask" filters run on the
+host. On newsprint, most of the visible "dirt" is paper fibre and the
+halftone screen. **[confirmed by comparison]**
 
 Cropping and down-sampling as Epson's interpreter does it: **[confirmed]**
 
@@ -360,9 +379,10 @@ Cropping and down-sampling as Epson's interpreter does it: **[confirmed]**
 * Line-art (1-bit) is host-side thresholding of the gray scan; the device
   sees the same commands as gray.
 
-Dark-reference lines during calibration are 16-bit (`1E 41` byte 13 = `01`,
-W × 2 bytes, LED off). White-reference lines are 8-bit, like image data.
-**[inferred]**
+Calibration passes with `1E 41` byte 8 = `00` return the same layout
+with **16-bit little-endian** samples: 2 bytes per sample, one plane for
+AFE reads and gray, three planes for colour dark/white passes.
+**[confirmed]**
 
 ### 7.3 Transfers
 
@@ -383,14 +403,74 @@ transfer is 31112 = 4 lines + 8. The trailer looks like
 There is no ACK between transfers. The device streams at ~5 MB/s at 300 dpi
 colour.
 
+### 7.4 Calibration maths
+
+Derived from the four captures (300 gray, 300/600/1200 colour) and checked
+on hardware with `tools/v39replay.py`, which re-sends Epson's command
+stream with chosen values changed.
+
+**AFE offsets** (`1E 31`): run with all six offsets equal, LEDs off,
+reading 4 dark lines (16-bit, one plane) per step. The search is binary
+over 128…192: `128, 192, 160, 144, 136, 132, 134|130, 131|133`. The dark
+level rises ≈230 counts (of 65535) per offset step. The search stops at
+the lowest offset whose dark mean exceeds ≈1100. The interpreter then
+re-runs the search after the LED search and may lower one half by 1
+(e.g. gray @300: `134,134,134,133,133,133`); that rule is not fully
+determined. Results seen: 134/133 @300, 131 @600/1200, which gives dark
+levels ≈1000–1300. **[confirmed sequence, approximate target]** The exact
+choice hardly matters, because the black level below is measured
+afterwards.
+
+**LED exposure** (`1E 22` `led_duty[3]`): start at 135 (@300), 320
+(@600) or 640 (@1200) for all three colours. Read 4 lines, 8-bit,
+unshaded. Update each colour by `duty_new = duty × target / mean`, with
+targets ≈ R 170, G 172.5, B 167.5 (8-bit means). Stop after 2–3 rounds or
+when a channel is within ~±1. Final duties: (320, 292, 172) @300,
+(605, 570, 337) @600, (1225, 1215, 700) @1200. **[confirmed]**
+
+**Black level** (`1E 42` words 3–8): from the 32-line 16-bit dark pass,
+average each pixel over all lines and colour planes, then per sensor half
+`black = floor(min over x of that average)`. This matches exactly:
+`1102/810` gray @300, `1112/1053` colour @300, `940/732` @600.
+**[confirmed]**
+
+**Shading table** (`1E 84` type `06`): per pixel and plane, in raw
+(interleaved) order, from the mean of the white pass `w`:
+
+```
+T = s · (w − base_c − D)          clipped to 1…65535; dummy pixels → 0xFFFF
+          s       D       base_c (= 1E 42 words 0–2)
+300 dpi   1.008   ≈288    ≈0   (Epson sends small values: 3; 8,19,1)
+600 dpi   2.044   ≈328    ≈ min_x(w_c) − 100…200, per colour (32841, 33269, 32524)
+1200 dpi  2.019   ≈330    same rule                  (33331, 33482, 32279)
+```
+
+The fit to Epson's tables has 0.4% rms scatter. At 600/1200 dpi the host
+subtracts a per-colour base and doubles the scale, so the table uses the
+full 16-bit range. **[confirmed by fit]**
+
+**What the device does with it** (8-bit mode): replacing the table by
+constants C gives `out_C = out_normal · T / C` per pixel (slope 0.997,
+r = 0.999). The output is inversely proportional to the table entry:
+`out ≈ K · (raw − black_half) / (T/s + base)`. The gain K and the role of
+`1E 43` are not separated yet. **[confirmed 1/T, inferred rest]**
+
+**Validation:** replaying Epson's sequence, but uploading a table computed
+with the formula above from the replay's *own* fresh white pass, gives
+the same image as Epson's table. Brightness is within 0.2–1% per
+colour/half and the mean difference is 2.3 (300 dpi) / 2.8 (600 dpi)
+levels, the same as two runs of Epson's own sequence. **[confirmed on hardware]**
+
 ## 8. Things that are still open
 
-* Exact meaning of `1E 42`, `1E 22` fields, `1E 41` bytes 9–17, `1E 01`
-  units, `1E 08`, `1E 87`, `1E 5A`, `1E A2`, and the transfer trailer.
-* How the shading coefficients are computed from the dark/white
-  references, i.e. the format of the type `06` table. Next step: dump the
-  references and the uploaded table from a capture and fit them.
-* LED exposure search algorithm (target levels).
+* Exact meaning of the `1E 22` fields, `1E 41` bytes 9–17 (shading/LED
+  gating bits), `1E 01` units, `1E 08`, `1E 87`, `1E 5A`, `1E A2`, `1E 43`,
+  and the transfer trailer.
+* The device gain K, and how `1E 43` enters the output formula.
+* The exact rule of the AFE per-half fine adjustment.
+* Dummy pixels at 1200 dpi.
+* In 16-bit output mode a final-geometry scan starts ≈1.2" further down
+  the page than the same scan in 8-bit mode. Not understood.
 * 2400 dpi and 4800 dpi (`FS I` reports max 4800) layouts.
 * Button bit mapping (`1E 85`); there are 4 buttons: Start/Copy/Send/PDF.
 * Behaviour on errors / cover open / carriage stuck.
@@ -465,3 +545,13 @@ the host does that before `INTInit` (§4.2).
   firmware download.
 
 Build `esitrace` with LLVM: `clang -O1 -o esitrace.exe tools/esitrace.c`.
+
+* `tools/v39.py`: a prototype driver that speaks the device protocol
+  directly, with no Epson code. It uses usbscan.sys via ctypes on
+  Windows and pyusb on Linux. It covers firmware upload, status, memory,
+  AFE, LED, scan setup and image reads.
+* `tools/v39replay.py`: replays a captured session through `v39.py`. It
+  can patch individual parameter bytes (`--patch I:K=V`), replace the
+  shading table with a constant or with one computed by the §7.4 formula
+  from the fresh white pass (`--shading-formula s,D[,base/base/base]`),
+  and dump every image read. Run it with `uv run --with numpy`.
