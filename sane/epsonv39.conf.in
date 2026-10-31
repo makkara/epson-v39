@@ -1,0 +1,14 @@
+# epsonv39.conf: EPSON Perfection V39 / GT-S650 backend
+#
+# The scanner has no firmware in flash. The backend uploads Epson's
+# esfw010c.bin after every power-on. Get it from Epson's driver package
+# (see sane-epsonv39(5)) and point this line at it:
+firmware @DATADIR@/sane/epsonv39/esfw010c.bin
+
+# USB devices to use. Without any "usb" line, the backend looks for the
+# Perfection V39 (04b8:013d) only.
+usb 0x04b8 0x013d
+
+# The Perfection V19 uses the same firmware and Windows driver; it is
+# untested. Uncomment to try it, and please report the result.
+#usb 0x04b8 0x013c

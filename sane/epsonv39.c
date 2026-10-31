@@ -1,69 +1,89 @@
-/* SPDX-License-Identifier: MIT */
-/*
- * SANE backend for the EPSON Perfection V39 / GT-S650 (USB 04b8:013d).
- *
- * Implements the device protocol documented in ../PROTOCOL.md directly:
- * firmware upload (4.2), init (6), AFE/LED/shading calibration (7.4),
- * positioning and image transfer (7.1-7.5) and host-side unscrambling,
- * cropping and down-sampling (7.2).  No Epson code is used; the firmware
- * image (esfw010c.bin) must be supplied by the user.
- *
- * Built out of tree against libusb-1.0 and the public SANE headers; the
- * exported entry points carry the sane_epsonv39_ prefix so the dll
- * meta-backend can load it.
- */
-#define _GNU_SOURCE
+/* sane - Scanner Access Now Easy.
+
+   This file implements a SANE backend for the EPSON Perfection V39 /
+   GT-S650 (USB 04b8:013d).
+
+   It implements the device protocol documented in PROTOCOL.md of the
+   epson-v39 project: firmware upload (4.2), init (6), AFE/LED/shading
+   calibration (7.4), positioning and image transfer (7.1-7.5), and
+   host-side unscrambling, cropping and down-sampling (7.2).  No Epson
+   code is used; the firmware image (esfw010c.bin) must be supplied by
+   the user.
+
+   Copyright (C) 2026 The epson-v39 contributors
+
+   --------------------------------------------------------------------------
+
+   This program is free software; you can redistribute it and/or
+   modify it under the terms of the GNU General Public License as
+   published by the Free Software Foundation; either version 2 of the
+   License, or (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+   As a special exception, the authors of SANE give permission for
+   additional uses of the libraries contained in this release of SANE.
+
+   The exception is that, if you link a SANE library with other files
+   to produce an executable, this does not by itself cause the
+   resulting executable to be covered by the GNU General Public
+   License.  Your use of that executable is in no way restricted on
+   account of linking the SANE library code into it.
+
+   This exception does not, however, invalidate any other reasons why
+   the executable file might be covered by the GNU General Public
+   License.
+
+   If you submit changes to SANE to the maintainers to be included in
+   a subsequent release, you agree by submitting the changes that
+   those changes may be distributed with this exception intact.
+
+   If you write modifications of your own for SANE, it is your choice
+   whether to permit this exception to apply to your modifications.
+   If you do not wish that, delete this exception notice.
+*/
+#include "../include/sane/config.h"
+
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
-#include <pthread.h>
-#include <stdarg.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef USE_PTHREAD
+#include <pthread.h>
+#endif
 
-#include <libusb.h>
-#include <sane/sane.h>
-#include <sane/saneopts.h>
+#include "../include/sane/sane.h"
+#include "../include/sane/sanei.h"
+#include "../include/sane/saneopts.h"
+#include "../include/sane/sanei_usb.h"
+#include "../include/sane/sanei_config.h"
+#include "../include/sane/sanei_thread.h"
 
-#define BACKEND_NAME "epsonv39"
+#define BACKEND_NAME epsonv39
+#include "../include/sane/sanei_backend.h"
+
+#define EPSONV39_CONFIG_FILE "epsonv39.conf"
 #define V39_VID 0x04b8
 #define V39_PID 0x013d
-#define EP_OUT 0x02
-#define EP_IN 0x81
 #define ACK 0x06
 
-#define BUILD 1
+#define BUILD 2
 
-#define ENTRY(name) sane_epsonv39_##name
-
-/* ------------------------------------------------------------------ */
-/* debug                                                               */
-
-static int dbg_level;
-
-static void DBG(int lvl, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-static void DBG(int lvl, const char *fmt, ...)
-{
-    va_list ap;
-    if (lvl > dbg_level)
-        return;
-    {
-        static double t0;
-        struct timespec ts;
-        double t;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        t = ts.tv_sec + ts.tv_nsec * 1e-9;
-        if (t0 == 0)
-            t0 = t;
-        fprintf(stderr, "[" BACKEND_NAME " %8.3f] ", t - t0);
-    }
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-}
+#ifndef PATH_MAX
+#define PATH_MAX 1024
+#endif
 
 static double now_s(void)
 {
@@ -181,22 +201,20 @@ typedef struct {
     int raw_lines;       /* lines in the final 1E 41                     */
     int raw_line_bytes;
     int lpt;
+    int threshold;
 } scanparm_t;
 
-typedef struct dev_s {
-    struct dev_s *next;
-    char name[64];
-    uint8_t bus, addr;
+typedef struct v39dev_s {
+    struct v39dev_s *next;
     SANE_Device sane;
 } v39dev_t;
 
 typedef struct {
-    libusb_device_handle *h;
+    SANE_Int dn;                /* sanei_usb device number */
     v39dev_t *dev;
 
     SANE_Option_Descriptor opt[NUM_OPTIONS];
-    SANE_Word val[NUM_OPTIONS];
-    char mode[32];
+    Option_Value val[NUM_OPTIONS];
 
     scanparm_t sp;
 
@@ -210,25 +228,19 @@ typedef struct {
     uint16_t w42[9];
     int shade_sel, shade_b15;
 
-    /* scanning */
-    int scanning;
-    volatile int cancel;
-    pthread_t thread;
-    int thread_running;
-    SANE_Status thread_status;
-    int transfers_left;
-
-    /* output queue (ring buffer) */
-    pthread_mutex_t mtx;
-    pthread_cond_t cond;
-    uint8_t *q;
-    size_t qcap, qhead, qlen;
-    int qdone;
+    /* scanning: the reader task writes finished lines into a pipe */
+    SANE_Bool scanning;
+    SANE_Bool cancelled;
+    SANE_Bool non_blocking;
+    SANE_Pid reader;
+    SANE_Status reader_status;  /* GOOD: every image transfer was read */
+    int pipe_r;                 /* frontend side of the pipe */
+    int reader_fd;              /* write end; owned by the reader, set before it starts */
     size_t delivered, total;
 } v39_t;
 
-static libusb_context *usbctx;
 static v39dev_t *devices;
+static int num_devices;
 static const SANE_Device **devlist;
 static char fw_path_conf[PATH_MAX];
 
@@ -252,45 +264,34 @@ static const char *status_str(SANE_Status st)
 #define TIMEOUT_IMG 30000
 #define TIMEOUT_FW 60000
 
-static SANE_Status usb_write_t(v39_t *s, const void *buf, int len, int timeout);
+static SANE_Status usb_write_t(v39_t *s, const void *buf, int len, int timeout)
+{
+    size_t n = len;
+    SANE_Status st;
+    sanei_usb_set_timeout(timeout);
+    st = sanei_usb_write_bulk(s->dn, buf, &n);
+    if (st != SANE_STATUS_GOOD || n != (size_t)len) {
+        DBG(1, "usb write failed: %s (%zu/%d)\n", status_str(st), n, len);
+        return SANE_STATUS_IO_ERROR;
+    }
+    return SANE_STATUS_GOOD;
+}
+
 static SANE_Status usb_write(v39_t *s, const void *buf, int len)
 {
     return usb_write_t(s, buf, len, TIMEOUT_CMD);
 }
 
-static SANE_Status usb_write_t(v39_t *s, const void *buf, int len, int timeout)
-{
-    int done = 0, r;
-    r = libusb_bulk_transfer(s->h, EP_OUT, (unsigned char *)buf, len, &done, timeout);
-    if (r < 0 || done != len) {
-        DBG(1, "usb write failed: %s (%d/%d)\n", libusb_error_name(r), done, len);
-        return SANE_STATUS_IO_ERROR;
-    }
-    if (dbg_level >= 5) {
-        int i;
-        fprintf(stderr, "[" BACKEND_NAME "] >");
-        for (i = 0; i < len && i < 48; i++)
-            fprintf(stderr, " %02x", ((const uint8_t *)buf)[i]);
-        fprintf(stderr, len > 48 ? " ...(%d)\n" : "\n", len);
-    }
-    return SANE_STATUS_GOOD;
-}
-
 /* one bulk IN transfer of exactly len bytes (the device ends with a short packet) */
 static SANE_Status usb_read(v39_t *s, void *buf, int len, int timeout)
 {
-    int got = 0, r;
-    r = libusb_bulk_transfer(s->h, EP_IN, buf, len, &got, timeout);
-    if (r < 0 || got != len) {
-        DBG(1, "usb read failed: %s (%d/%d)\n", libusb_error_name(r), got, len);
+    size_t n = len;
+    SANE_Status st;
+    sanei_usb_set_timeout(timeout);
+    st = sanei_usb_read_bulk(s->dn, buf, &n);
+    if (st != SANE_STATUS_GOOD || n != (size_t)len) {
+        DBG(1, "usb read failed: %s (%zu/%d)\n", status_str(st), n, len);
         return SANE_STATUS_IO_ERROR;
-    }
-    if (dbg_level >= 5) {
-        int i;
-        fprintf(stderr, "[" BACKEND_NAME "] <");
-        for (i = 0; i < len && i < 48; i++)
-            fprintf(stderr, " %02x", ((const uint8_t *)buf)[i]);
-        fprintf(stderr, len > 48 ? " ...(%d)\n" : "\n", len);
     }
     return SANE_STATUS_GOOD;
 }
@@ -579,13 +580,17 @@ static SANE_Status upload_firmware(v39_t *s)
             found = try_load_fw(p, &fw);
         }
     }
+#ifdef PATH_SANE_DATA_DIR
+    if (!found)
+        found = try_load_fw(STRINGIFY(PATH_SANE_DATA_DIR) "/sane/epsonv39/esfw010c.bin", &fw);
+#endif
     if (!found)
         found = try_load_fw("/usr/share/sane/epsonv39/esfw010c.bin", &fw) ||
                 try_load_fw("/usr/local/share/sane/epsonv39/esfw010c.bin", &fw) ||
                 try_load_fw("/usr/share/iscan/esfw010c.bin", &fw) ||
                 try_load_fw("/usr/lib/firmware/epson/esfw010c.bin", &fw);
     if (!found) {
-        DBG(0, "firmware esfw010c.bin not found; set 'firmware' in epsonv39.conf\n");
+        DBG(0, "firmware esfw010c.bin not found; set 'firmware' in " EPSONV39_CONFIG_FILE "\n");
         return SANE_STATUS_INVAL;
     }
 
@@ -961,17 +966,18 @@ static const hwres_t *find_hw(int dpi)
 static void calc_params(v39_t *s)
 {
     scanparm_t *p = &s->sp;
-    double tlx = SANE_UNFIX(s->val[OPT_TL_X]) / 25.4, tly = SANE_UNFIX(s->val[OPT_TL_Y]) / 25.4;
-    double brx = SANE_UNFIX(s->val[OPT_BR_X]) / 25.4, bry = SANE_UNFIX(s->val[OPT_BR_Y]) / 25.4;
-    int dpi = s->val[OPT_RESOLUTION];
+    double tlx = SANE_UNFIX(s->val[OPT_TL_X].w) / 25.4, tly = SANE_UNFIX(s->val[OPT_TL_Y].w) / 25.4;
+    double brx = SANE_UNFIX(s->val[OPT_BR_X].w) / 25.4, bry = SANE_UNFIX(s->val[OPT_BR_Y].w) / 25.4;
+    int dpi = s->val[OPT_RESOLUTION].w;
     int hwdpi, avail;
 
     if (brx < tlx) { double t = brx; brx = tlx; tlx = t; }
     if (bry < tly) { double t = bry; bry = tly; tly = t; }
 
-    p->out_mode = !strcmp(s->mode, SANE_VALUE_SCAN_MODE_COLOR) ? 0
-                : !strcmp(s->mode, SANE_VALUE_SCAN_MODE_GRAY) ? 1 : 2;
-    if (s->val[OPT_PREVIEW])
+    p->out_mode = !strcmp(s->val[OPT_MODE].s, SANE_VALUE_SCAN_MODE_COLOR) ? 0
+                : !strcmp(s->val[OPT_MODE].s, SANE_VALUE_SCAN_MODE_GRAY) ? 1 : 2;
+    p->threshold = s->val[OPT_THRESHOLD].w;
+    if (s->val[OPT_PREVIEW].w)
         dpi = 75;
     p->out_dpi = dpi;
     hwdpi = dpi < 300 ? 300 : dpi;
@@ -1015,40 +1021,78 @@ static void calc_params(v39_t *s)
 }
 
 /* ------------------------------------------------------------------ */
-/* output queue                                                        */
+/* output buffer of the reader task                                    */
 
-static int q_put(v39_t *s, const uint8_t *d, size_t n)
+/*
+ * The reader task writes finished lines into a pipe that sane_read() drains.
+ * Writes are non-blocking; whatever the pipe does not take yet is kept in
+ * this buffer, so a slow frontend does not stall the USB stream.  Only when
+ * more than OBUF_MAX bytes are pending does the reader block on the pipe.
+ * When the frontend side closes its end (cancel), writes fail with EPIPE.
+ */
+#define OBUF_MAX (64u << 20)
+
+typedef struct {
+    int fd;
+    uint8_t *b;
+    size_t off, len, cap;
+} obuf_t;
+
+static int obuf_flush(obuf_t *ob, int block)
 {
-    pthread_mutex_lock(&s->mtx);
-    while (n > 0) {
-        size_t tail, chunk;
-        while (s->qlen == s->qcap && !s->cancel)
-            pthread_cond_wait(&s->cond, &s->mtx);
-        if (s->cancel) {
-            pthread_mutex_unlock(&s->mtx);
-            return -1;
+    while (ob->len > ob->off) {
+        ssize_t n = write(ob->fd, ob->b + ob->off, ob->len - ob->off);
+        if (n > 0) {
+            ob->off += n;
+            continue;
         }
-        tail = (s->qhead + s->qlen) % s->qcap;
-        chunk = s->qcap - s->qlen;
-        if (chunk > s->qcap - tail)
-            chunk = s->qcap - tail;
-        if (chunk > n)
-            chunk = n;
-        memcpy(s->q + tail, d, chunk);
-        s->qlen += chunk;
-        d += chunk;
-        n -= chunk;
-        pthread_cond_broadcast(&s->cond);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            fd_set wfds;
+            if (!block)
+                break;
+            FD_ZERO(&wfds);
+            FD_SET(ob->fd, &wfds);
+            select(ob->fd + 1, NULL, &wfds, NULL, NULL);
+            continue;
+        }
+        return -1;                       /* EPIPE: the frontend side is gone */
     }
-    pthread_mutex_unlock(&s->mtx);
+    if (ob->off == ob->len)
+        ob->off = ob->len = 0;
     return 0;
 }
 
+static int obuf_put(obuf_t *ob, const uint8_t *d, size_t n)
+{
+    if (ob->off > 0 && ob->off >= ob->len / 2) {
+        memmove(ob->b, ob->b + ob->off, ob->len - ob->off);
+        ob->len -= ob->off;
+        ob->off = 0;
+    }
+    if (ob->len + n > ob->cap) {
+        size_t cap = ob->cap ? ob->cap : (1u << 20);
+        uint8_t *nb;
+        while (cap < ob->len + n)
+            cap *= 2;
+        nb = realloc(ob->b, cap);
+        if (!nb)
+            return -1;
+        ob->b = nb;
+        ob->cap = cap;
+    }
+    memcpy(ob->b + ob->len, d, n);
+    ob->len += n;
+    return obuf_flush(ob, ob->len - ob->off > OBUF_MAX);
+}
+
 /* ------------------------------------------------------------------ */
-/* image reader thread                                                 */
+/* image reader task                                                   */
 
 typedef struct {
     v39_t *s;
+    obuf_t ob;
     int *map;            /* raw byte index (within a plane) per hw pixel  */
     uint32_t *vacc;      /* vertical accumulation over v raw lines        */
     int vcount;
@@ -1060,8 +1104,7 @@ typedef struct {
 
 static int emit_line(pipe_t *pp, const uint8_t *hwline)
 {
-    v39_t *s = pp->s;
-    scanparm_t *p = &s->sp;
+    scanparm_t *p = &pp->s->sp;
     int x, c, P = p->planes, hwdpi = p->hw->dpi;
     const uint8_t *src = hwline;
     uint8_t *tmp = NULL;
@@ -1113,13 +1156,13 @@ static int emit_line(pipe_t *pp, const uint8_t *hwline)
                 else {
                     if (!(x & 7))
                         o[x >> 3] = 0;
-                    if (g < s->val[OPT_THRESHOLD])
+                    if (g < p->threshold)
                         o[x >> 3] |= 0x80 >> (x & 7);
                 }
             }
         }
         pp->out_row++;
-        return q_put(s, o, p->bpl);
+        return obuf_put(&pp->ob, o, p->bpl);
     }
 }
 
@@ -1144,7 +1187,13 @@ static int process_raw_line(pipe_t *pp, const uint8_t *raw)
     return emit_line(pp, pp->line);
 }
 
-static void *reader_thread(void *arg)
+/*
+ * Runs in a thread or a forked process (sanei_thread).  Returns
+ * SANE_STATUS_GOOD when every image transfer was read from the device,
+ * CANCELLED when it stopped early because the frontend side closed the pipe,
+ * or an error.  The parent cancels and drains the device unless GOOD.
+ */
+static int reader_task(void *arg)
 {
     v39_t *s = arg;
     scanparm_t *p = &s->sp;
@@ -1155,9 +1204,25 @@ static void *reader_thread(void *arg)
     size_t tsize = (size_t)p->lpt * p->raw_line_bytes + 8;
     uint8_t *tbuf = malloc(tsize);
     SANE_Status st = SANE_STATUS_GOOD;
+    sigset_t set;
+
+    /* a write to the closed pipe must fail with EPIPE, not kill the frontend */
+    sigemptyset(&set);
+    sigaddset(&set, SIGPIPE);
+#ifdef USE_PTHREAD
+    if (!sanei_thread_is_forked())
+        pthread_sigmask(SIG_BLOCK, &set, NULL);
+    else
+#endif
+    {
+        signal(SIGPIPE, SIG_IGN);
+        close(s->pipe_r);
+    }
 
     memset(&pp, 0, sizeof pp);
     pp.s = s;
+    pp.ob.fd = s->reader_fd;
+    fcntl(pp.ob.fd, F_SETFL, fcntl(pp.ob.fd, F_GETFL) | O_NONBLOCK);
     pp.map = malloc(sizeof(int) * p->hw_w);
     pp.vacc = calloc((size_t)p->planes * p->hw_w, sizeof(uint32_t));
     pp.dacc = calloc((size_t)p->planes * p->out_w, sizeof(uint32_t));
@@ -1180,37 +1245,33 @@ static void *reader_thread(void *arg)
 
     while (left > 0) {
         int n = left < p->lpt ? left : p->lpt;
-        int got = 0, r;
-        if (s->cancel) {
-            st = SANE_STATUS_CANCELLED;
+        int size = n * p->raw_line_bytes + 8;
+        st = usb_read(s, tbuf, size, TIMEOUT_IMG);
+        if (st != SANE_STATUS_GOOD) {
+            DBG(1, "image read failed with %d lines left\n", left);
             break;
         }
-        r = libusb_bulk_transfer(s->h, EP_IN, tbuf, n * p->raw_line_bytes + 8, &got, TIMEOUT_IMG);
-        if (r < 0 || got != n * p->raw_line_bytes + 8) {
-            DBG(1, "image read failed: %s (%d/%d)\n", libusb_error_name(r), got,
-                n * p->raw_line_bytes + 8);
-            st = SANE_STATUS_IO_ERROR;
-            break;
-        }
-        s->transfers_left--;
-        DBG(4, "transfer %d lines, trailer %02x %02x %02x %02x %02x %02x %02x %02x\n", n,
-            tbuf[got - 8], tbuf[got - 7], tbuf[got - 6], tbuf[got - 5],
-            tbuf[got - 4], tbuf[got - 3], tbuf[got - 2], tbuf[got - 1]);
-        for (i = 0; i < n; i++)
-            if (process_raw_line(&pp, tbuf + (size_t)i * p->raw_line_bytes) < 0) {
-                st = SANE_STATUS_CANCELLED;
-                break;
-            }
-        if (st != SANE_STATUS_GOOD)
-            break;
         left -= n;
+        DBG(4, "transfer %d lines, trailer %02x %02x %02x %02x %02x %02x %02x %02x\n", n,
+            tbuf[size - 8], tbuf[size - 7], tbuf[size - 6], tbuf[size - 5],
+            tbuf[size - 4], tbuf[size - 3], tbuf[size - 2], tbuf[size - 1]);
+        for (i = 0; i < n; i++)
+            if (process_raw_line(&pp, tbuf + (size_t)i * p->raw_line_bytes) < 0)
+                break;
+        if (i < n) {
+            /* the frontend side closed the pipe */
+            st = left > 0 ? SANE_STATUS_CANCELLED : SANE_STATUS_GOOD;
+            goto out;
+        }
     }
-    /* pad if the device delivered fewer lines than promised (should not happen) */
-    if (st == SANE_STATUS_GOOD && pp.out_row < p->out_h) {
-        DBG(1, "padding %d missing lines\n", p->out_h - pp.out_row);
+    if (st == SANE_STATUS_GOOD) {
+        /* pad if the device delivered fewer lines than promised (should not happen) */
+        if (pp.out_row < p->out_h)
+            DBG(1, "padding %d missing lines\n", p->out_h - pp.out_row);
         memset(pp.out, p->out_mode == 2 ? 0 : 0xFF, p->bpl);
-        while (pp.out_row < p->out_h && q_put(s, pp.out, p->bpl) == 0)
+        while (pp.out_row < p->out_h && obuf_put(&pp.ob, pp.out, p->bpl) == 0)
             pp.out_row++;
+        obuf_flush(&pp.ob, 1);
     }
 out:
     free(tbuf);
@@ -1219,12 +1280,10 @@ out:
     free(pp.dacc);
     free(pp.line);
     free(pp.out);
-    pthread_mutex_lock(&s->mtx);
-    s->thread_status = st;
-    s->qdone = 1;
-    pthread_cond_broadcast(&s->cond);
-    pthread_mutex_unlock(&s->mtx);
-    return NULL;
+    free(pp.ob.b);
+    close(s->reader_fd);
+    DBG(3, "reader done: %s\n", status_str(st));
+    return st;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1375,7 +1434,7 @@ static SANE_Status do_calibrate_and_start(v39_t *s)
      * from the cached duties, so it normally stops after its first read.
      */
     {
-        int hit = s->val[OPT_CAL_CACHE] && cache_load(s, hw, colour);
+        int hit = s->val[OPT_CAL_CACHE].w && cache_load(s, hw, colour);
         int afe_ok = 0, reads = 0;
 
         if (!hit) {
@@ -1541,7 +1600,6 @@ static SANE_Status do_calibrate_and_start(v39_t *s)
     /* 8. start */
     DBG(2, "calibration done in %.2f s; scanning %d raw lines (%d x %d out)\n",
         now_s() - t0, p->raw_lines, p->out_w, p->out_h);
-    s->transfers_left = (p->raw_lines + p->lpt - 1) / p->lpt;
     return op2(s, 0x1E, 0x47);
 
 fail:
@@ -1554,122 +1612,130 @@ fail:
 /* ------------------------------------------------------------------ */
 /* config and discovery                                                */
 
-static void read_config(void)
+static const char *model_name(SANE_Word product)
 {
-    char path[PATH_MAX], line[PATH_MAX + 32];
-    const char *dirs = getenv("SANE_CONFIG_DIR");
-    FILE *f = NULL;
+    switch (product) {
+    case 0x013d: return "Perfection V39";
+    case 0x013c: return "Perfection V19";      /* same firmware; untested */
+    default: return "Perfection V39 compatible";
+    }
+}
 
-    if (dirs) {
-        char *copy = strdup(dirs), *save = NULL, *d;
-        for (d = strtok_r(copy, ":", &save); d && !f; d = strtok_r(NULL, ":", &save)) {
-            snprintf(path, sizeof path, "%s/" BACKEND_NAME ".conf", d);
-            f = fopen(path, "r");
-        }
-        free(copy);
+static SANE_Status attach(SANE_String_Const devname)
+{
+    v39dev_t *d;
+    SANE_Word vendor = 0, product = 0;
+
+    for (d = devices; d; d = d->next)
+        if (!strcmp(d->sane.name, devname))
+            return SANE_STATUS_GOOD;
+    sanei_usb_get_vendor_product_byname(devname, &vendor, &product);
+    d = calloc(1, sizeof *d);
+    if (!d)
+        return SANE_STATUS_NO_MEM;
+    d->sane.name = strdup(devname);
+    d->sane.vendor = "Epson";
+    d->sane.model = model_name(product);
+    d->sane.type = "flatbed scanner";
+    if (!d->sane.name) {
+        free(d);
+        return SANE_STATUS_NO_MEM;
     }
-    if (!f)
-        f = fopen("/etc/sane.d/" BACKEND_NAME ".conf", "r");
-    if (!f)
-        f = fopen("/usr/local/etc/sane.d/" BACKEND_NAME ".conf", "r");
-    if (!f)
-        return;
-    while (fgets(line, sizeof line, f)) {
-        char *l = line, *e;
-        while (*l == ' ' || *l == '\t')
-            l++;
-        e = l + strlen(l);
-        while (e > l && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ' || e[-1] == '\t'))
-            *--e = 0;
-        if (!*l || *l == '#')
-            continue;
-        if (!strncmp(l, "firmware", 8) && (l[8] == ' ' || l[8] == '\t')) {
-            l += 8;
-            while (*l == ' ' || *l == '\t')
-                l++;
-            snprintf(fw_path_conf, sizeof fw_path_conf, "%s", l);
-            DBG(2, "config: firmware %s\n", fw_path_conf);
-        }
-    }
-    fclose(f);
+    DBG(2, "attach: %s (%04x:%04x)\n", devname, vendor, product);
+    d->next = devices;
+    devices = d;
+    num_devices++;
+    return SANE_STATUS_GOOD;
 }
 
 static void free_devices(void)
 {
     while (devices) {
         v39dev_t *n = devices->next;
+        free((void *)devices->sane.name);
         free(devices);
         devices = n;
     }
+    num_devices = 0;
     free(devlist);
     devlist = NULL;
 }
 
+/*
+ * epsonv39.conf:
+ *   firmware <path>        location of esfw010c.bin
+ *   usb <vendor> <product> device to attach (default: usb 0x04b8 0x013d)
+ */
 static void probe_devices(void)
 {
-    libusb_device **list;
-    ssize_t n, i;
-    int cnt = 0;
-    v39dev_t *d;
+    char line[PATH_MAX];
+    FILE *f;
+    int usb_lines = 0;
 
     free_devices();
-    n = libusb_get_device_list(usbctx, &list);
-    for (i = 0; i < n; i++) {
-        struct libusb_device_descriptor desc;
-        if (libusb_get_device_descriptor(list[i], &desc) != 0)
-            continue;
-        if (desc.idVendor != V39_VID || desc.idProduct != V39_PID)
-            continue;
-        d = calloc(1, sizeof *d);
-        if (!d)
-            break;
-        d->bus = libusb_get_bus_number(list[i]);
-        d->addr = libusb_get_device_address(list[i]);
-        snprintf(d->name, sizeof d->name, "libusb:%03u:%03u", d->bus, d->addr);
-        d->sane.name = d->name;
-        d->sane.vendor = "Epson";
-        d->sane.model = "Perfection V39";
-        d->sane.type = "flatbed scanner";
-        d->next = devices;
-        devices = d;
-        cnt++;
+    sanei_usb_scan_devices();
+    f = sanei_config_open(EPSONV39_CONFIG_FILE);
+    if (f) {
+        while (sanei_config_read(line, sizeof line, f)) {
+            const char *l = sanei_config_skip_whitespace(line);
+            if (!*l || *l == '#')
+                continue;
+            if (!strncmp(l, "firmware", 8) && (l[8] == ' ' || l[8] == '\t')) {
+                snprintf(fw_path_conf, sizeof fw_path_conf, "%s",
+                         sanei_config_skip_whitespace(l + 8));
+                DBG(2, "config: firmware %s\n", fw_path_conf);
+            } else if (!strncmp(l, "usb", 3)) {
+                usb_lines++;
+                sanei_usb_attach_matching_devices(l, attach);
+            } else {
+                DBG(1, "config: ignoring '%s'\n", l);
+            }
+        }
+        fclose(f);
     }
-    if (n >= 0)
-        libusb_free_device_list(list, 1);
-    devlist = calloc(cnt + 1, sizeof *devlist);
-    for (i = 0, d = devices; d && devlist; d = d->next)
+    if (!usb_lines)
+        sanei_usb_find_devices(V39_VID, V39_PID, attach);
+}
+
+static void build_devlist(void)
+{
+    v39dev_t *d;
+    int i = 0;
+    free(devlist);
+    devlist = calloc(num_devices + 1, sizeof *devlist);
+    if (!devlist)
+        return;
+    for (d = devices; d; d = d->next)
         devlist[i++] = &d->sane;
 }
 
 /* ------------------------------------------------------------------ */
 /* SANE API                                                            */
 
-SANE_Status ENTRY(init)(SANE_Int *version_code, SANE_Auth_Callback authorize)
+SANE_Status sane_init(SANE_Int *version_code, SANE_Auth_Callback authorize)
 {
-    const char *e = getenv("SANE_DEBUG_EPSONV39");
     (void)authorize;
-    dbg_level = e ? atoi(e) : 0;
-    DBG(1, "init, build %d\n", BUILD);
+    DBG_INIT();
+    DBG(1, "sane_init: epsonv39 backend, build %d\n", BUILD);
     if (version_code)
-        *version_code = SANE_VERSION_CODE(SANE_CURRENT_MAJOR, 0, BUILD);
-    if (libusb_init(&usbctx) != 0)
-        return SANE_STATUS_IO_ERROR;
-    read_config();
+        *version_code = SANE_VERSION_CODE(SANE_CURRENT_MAJOR, SANE_CURRENT_MINOR, BUILD);
+    sanei_usb_init();
+    sanei_thread_init();
+    probe_devices();
     return SANE_STATUS_GOOD;
 }
 
-void ENTRY(exit)(void)
+void sane_exit(void)
 {
     free_devices();
-    if (usbctx)
-        libusb_exit(usbctx);
-    usbctx = NULL;
+    sanei_usb_exit();
 }
 
-SANE_Status ENTRY(get_devices)(const SANE_Device ***list, SANE_Bool local_only)
+SANE_Status sane_get_devices(const SANE_Device ***list, SANE_Bool local_only)
 {
     (void)local_only;
     probe_devices();
+    build_devlist();
     if (!devlist)
         return SANE_STATUS_NO_MEM;
     *list = devlist;
@@ -1679,7 +1745,9 @@ SANE_Status ENTRY(get_devices)(const SANE_Device ***list, SANE_Bool local_only)
 static void init_options(v39_t *s)
 {
     SANE_Option_Descriptor *o = s->opt;
+    size_t maxlen = 0;
     int i;
+
     memset(o, 0, sizeof s->opt);
     for (i = 0; i < NUM_OPTIONS; i++) {
         o[i].size = sizeof(SANE_Word);
@@ -1690,21 +1758,25 @@ static void init_options(v39_t *s)
     o[OPT_NUM_OPTS].desc = SANE_DESC_NUM_OPTIONS;
     o[OPT_NUM_OPTS].type = SANE_TYPE_INT;
     o[OPT_NUM_OPTS].cap = SANE_CAP_SOFT_DETECT;
-    s->val[OPT_NUM_OPTS] = NUM_OPTIONS;
+    s->val[OPT_NUM_OPTS].w = NUM_OPTIONS;
 
-    o[OPT_MODE_GROUP].title = SANE_I18N("Scan Mode");
+    o[OPT_MODE_GROUP].name = SANE_NAME_STANDARD;
+    o[OPT_MODE_GROUP].title = SANE_TITLE_STANDARD;
     o[OPT_MODE_GROUP].type = SANE_TYPE_GROUP;
     o[OPT_MODE_GROUP].cap = 0;
     o[OPT_MODE_GROUP].size = 0;
 
+    for (i = 0; mode_list[i]; i++)
+        if (strlen(mode_list[i]) + 1 > maxlen)
+            maxlen = strlen(mode_list[i]) + 1;
     o[OPT_MODE].name = SANE_NAME_SCAN_MODE;
     o[OPT_MODE].title = SANE_TITLE_SCAN_MODE;
     o[OPT_MODE].desc = SANE_DESC_SCAN_MODE;
     o[OPT_MODE].type = SANE_TYPE_STRING;
-    o[OPT_MODE].size = sizeof s->mode;
+    o[OPT_MODE].size = maxlen;
     o[OPT_MODE].constraint_type = SANE_CONSTRAINT_STRING_LIST;
     o[OPT_MODE].constraint.string_list = mode_list;
-    strcpy(s->mode, SANE_VALUE_SCAN_MODE_COLOR);
+    s->val[OPT_MODE].s = strdup(SANE_VALUE_SCAN_MODE_COLOR);
 
     o[OPT_RESOLUTION].name = SANE_NAME_SCAN_RESOLUTION;
     o[OPT_RESOLUTION].title = SANE_TITLE_SCAN_RESOLUTION;
@@ -1713,13 +1785,13 @@ static void init_options(v39_t *s)
     o[OPT_RESOLUTION].unit = SANE_UNIT_DPI;
     o[OPT_RESOLUTION].constraint_type = SANE_CONSTRAINT_WORD_LIST;
     o[OPT_RESOLUTION].constraint.word_list = res_list;
-    s->val[OPT_RESOLUTION] = 300;
+    s->val[OPT_RESOLUTION].w = 300;
 
     o[OPT_PREVIEW].name = SANE_NAME_PREVIEW;
     o[OPT_PREVIEW].title = SANE_TITLE_PREVIEW;
     o[OPT_PREVIEW].desc = SANE_DESC_PREVIEW;
     o[OPT_PREVIEW].type = SANE_TYPE_BOOL;
-    s->val[OPT_PREVIEW] = SANE_FALSE;
+    s->val[OPT_PREVIEW].w = SANE_FALSE;
 
     o[OPT_THRESHOLD].name = SANE_NAME_THRESHOLD;
     o[OPT_THRESHOLD].title = SANE_TITLE_THRESHOLD;
@@ -1728,7 +1800,7 @@ static void init_options(v39_t *s)
     o[OPT_THRESHOLD].constraint_type = SANE_CONSTRAINT_RANGE;
     o[OPT_THRESHOLD].constraint.range = &thr_range;
     o[OPT_THRESHOLD].cap |= SANE_CAP_INACTIVE;
-    s->val[OPT_THRESHOLD] = 128;
+    s->val[OPT_THRESHOLD].w = 128;
 
     o[OPT_CAL_CACHE].name = "calibration-cache";
     o[OPT_CAL_CACHE].title = SANE_I18N("Calibration cache");
@@ -1738,9 +1810,10 @@ static void init_options(v39_t *s)
                                       "calibration.");
     o[OPT_CAL_CACHE].type = SANE_TYPE_BOOL;
     o[OPT_CAL_CACHE].cap |= SANE_CAP_ADVANCED;
-    s->val[OPT_CAL_CACHE] = SANE_TRUE;
+    s->val[OPT_CAL_CACHE].w = SANE_TRUE;
 
-    o[OPT_GEOMETRY_GROUP].title = SANE_I18N("Geometry");
+    o[OPT_GEOMETRY_GROUP].name = SANE_NAME_GEOMETRY;
+    o[OPT_GEOMETRY_GROUP].title = SANE_TITLE_GEOMETRY;
     o[OPT_GEOMETRY_GROUP].type = SANE_TYPE_GROUP;
     o[OPT_GEOMETRY_GROUP].cap = 0;
     o[OPT_GEOMETRY_GROUP].size = 0;
@@ -1763,6 +1836,11 @@ static void init_options(v39_t *s)
     o[OPT_BR_Y].name = SANE_NAME_SCAN_BR_Y;
     o[OPT_BR_Y].title = SANE_TITLE_SCAN_BR_Y;
     o[OPT_BR_Y].desc = SANE_DESC_SCAN_BR_Y;
+    s->val[OPT_TL_X].w = 0;
+    s->val[OPT_TL_Y].w = 0;
+    s->val[OPT_BR_X].w = SANE_FIX(MAX_X_MM);
+    s->val[OPT_BR_Y].w = SANE_FIX(MAX_Y_MM);
+
     o[OPT_SENSORS_GROUP].name = SANE_NAME_SENSORS;
     o[OPT_SENSORS_GROUP].title = SANE_TITLE_SENSORS;
     o[OPT_SENSORS_GROUP].type = SANE_TYPE_GROUP;
@@ -1781,64 +1859,43 @@ static void init_options(v39_t *s)
             o[btn[i].opt].desc = btn[i].desc;
             o[btn[i].opt].type = SANE_TYPE_BOOL;
             o[btn[i].opt].cap = SANE_CAP_SOFT_DETECT | SANE_CAP_HARD_SELECT | SANE_CAP_ADVANCED;
-            s->val[btn[i].opt] = SANE_FALSE;
+            s->val[btn[i].opt].w = SANE_FALSE;
         }
     }
-
-    s->val[OPT_TL_X] = 0;
-    s->val[OPT_TL_Y] = 0;
-    s->val[OPT_BR_X] = SANE_FIX(MAX_X_MM);
-    s->val[OPT_BR_Y] = SANE_FIX(MAX_Y_MM);
 }
 
-SANE_Status ENTRY(open)(SANE_String_Const name, SANE_Handle *handle)
+SANE_Status sane_open(SANE_String_Const name, SANE_Handle *handle)
 {
     v39dev_t *d;
     v39_t *s;
-    libusb_device **list;
-    ssize_t n, i;
-    int r;
     SANE_Status st;
 
     if (!devices)
         probe_devices();
     for (d = devices; d; d = d->next)
-        if (!name || !*name || !strcmp(name, d->name))
+        if (!name || !*name || !strcmp(name, d->sane.name))
             break;
-    if (!d)
+    if (!d) {
+        DBG(1, "sane_open: no device '%s'\n", name ? name : "");
         return SANE_STATUS_INVAL;
+    }
 
     s = calloc(1, sizeof *s);
     if (!s)
         return SANE_STATUS_NO_MEM;
     s->dev = d;
-    pthread_mutex_init(&s->mtx, NULL);
-    pthread_cond_init(&s->cond, NULL);
+    s->pipe_r = s->reader_fd = -1;
+    sanei_thread_invalidate(s->reader);
 
-    n = libusb_get_device_list(usbctx, &list);
-    for (i = 0; i < n; i++)
-        if (libusb_get_bus_number(list[i]) == d->bus && libusb_get_device_address(list[i]) == d->addr)
-            break;
-    r = i < n ? libusb_open(list[i], &s->h) : LIBUSB_ERROR_NO_DEVICE;
-    if (n >= 0)
-        libusb_free_device_list(list, 1);
-    if (r != 0) {
-        DBG(1, "cannot open %s: %s\n", d->name, libusb_error_name(r));
+    st = sanei_usb_open(d->sane.name, &s->dn);
+    if (st != SANE_STATUS_GOOD) {
+        DBG(1, "sane_open: cannot open %s: %s\n", d->sane.name, status_str(st));
         free(s);
-        return r == LIBUSB_ERROR_ACCESS ? SANE_STATUS_ACCESS_DENIED : SANE_STATUS_IO_ERROR;
-    }
-    libusb_set_auto_detach_kernel_driver(s->h, 1);
-    r = libusb_claim_interface(s->h, 0);
-    if (r != 0) {
-        DBG(1, "cannot claim interface: %s\n", libusb_error_name(r));
-        libusb_close(s->h);
-        free(s);
-        return SANE_STATUS_DEVICE_BUSY;
+        return st;
     }
     st = device_init(s);
     if (st != SANE_STATUS_GOOD) {
-        libusb_release_interface(s->h, 0);
-        libusb_close(s->h);
+        sanei_usb_close(s->dn);
         free(s);
         return st;
     }
@@ -1847,20 +1904,21 @@ SANE_Status ENTRY(open)(SANE_String_Const name, SANE_Handle *handle)
     return SANE_STATUS_GOOD;
 }
 
-static void stop_scan(v39_t *s);
+static void finish_scan(v39_t *s);
 
-void ENTRY(close)(SANE_Handle h)
+void sane_close(SANE_Handle h)
 {
     v39_t *s = h;
-    stop_scan(s);
-    libusb_release_interface(s->h, 0);
-    libusb_close(s->h);
-    pthread_mutex_destroy(&s->mtx);
-    pthread_cond_destroy(&s->cond);
+    if (s->scanning) {
+        s->cancelled = SANE_TRUE;
+        finish_scan(s);
+    }
+    sanei_usb_close(s->dn);
+    free(s->val[OPT_MODE].s);
     free(s);
 }
 
-const SANE_Option_Descriptor *ENTRY(get_option_descriptor)(SANE_Handle h, SANE_Int n)
+const SANE_Option_Descriptor *sane_get_option_descriptor(SANE_Handle h, SANE_Int n)
 {
     v39_t *s = h;
     if (n < 0 || n >= NUM_OPTIONS)
@@ -1868,129 +1926,99 @@ const SANE_Option_Descriptor *ENTRY(get_option_descriptor)(SANE_Handle h, SANE_I
     return &s->opt[n];
 }
 
-static SANE_Word nearest_res(SANE_Word v)
+/*
+ * 1E 85 returns the number of the button held down right now (1 Start,
+ * 2 Copy, 3 E-mail, 4 PDF, 0 none); it does not latch, so pollers should
+ * read several times a second.  No USB traffic is allowed while the image
+ * is streaming, so the buttons read as released then.
+ */
+static SANE_Status read_button(v39_t *s, SANE_Int n, SANE_Bool *pressed)
 {
-    int i, best = res_list[1];
-    for (i = 1; i <= res_list[0]; i++)
-        if (abs(res_list[i] - v) < abs(best - v))
-            best = res_list[i];
-    return best;
-}
-
-SANE_Status ENTRY(control_option)(SANE_Handle h, SANE_Int n, SANE_Action action,
-                                  void *val, SANE_Int *info)
-{
-    v39_t *s = h;
-    SANE_Option_Descriptor *o;
-    if (info)
-        *info = 0;
-    if (n < 0 || n >= NUM_OPTIONS)
-        return SANE_STATUS_INVAL;
-    o = &s->opt[n];
-    if (o->type == SANE_TYPE_GROUP)
-        return SANE_STATUS_INVAL;
-
-    if (action == SANE_ACTION_GET_VALUE) {
-        if (n >= OPT_BUTTON_SCAN && n <= OPT_BUTTON_PDF) {
-            /*
-             * 1E 85 returns the number of the button held down right now
-             * (1 Start, 2 Copy, 3 E-mail, 4 PDF, 0 none); it does not latch,
-             * so pollers should read several times a second.  No USB
-             * traffic is allowed while the image is streaming.
-             */
-            uint8_t b = 0;
-            if (!s->scanning) {
-                /* one query serves all four options for 50 ms */
-                double t = now_s();
-                if (t - s->btn_time > 0.05) {
-                    SANE_Status st = cmd_query(s, 0x1E, 0x85, &s->btn, 1);
-                    if (st != SANE_STATUS_GOOD)
-                        return st;
-                    s->btn_time = t;
-                    if (s->btn)
-                        DBG(4, "button %u\n", s->btn);
-                }
-                b = s->btn;
-            }
-            *(SANE_Word *)val = b == n - OPT_BUTTON_SCAN + 1 ? SANE_TRUE : SANE_FALSE;
-            return SANE_STATUS_GOOD;
+    if (!s->scanning) {
+        double t = now_s();
+        if (t - s->btn_time > 0.05) {          /* one query serves all four options */
+            SANE_Status st = cmd_query(s, 0x1E, 0x85, &s->btn, 1);
+            if (st != SANE_STATUS_GOOD)
+                return st;
+            s->btn_time = t;
+            if (s->btn)
+                DBG(4, "button %u\n", s->btn);
         }
-        if (n == OPT_MODE)
-            strcpy(val, s->mode);
-        else
-            *(SANE_Word *)val = s->val[n];
-        return SANE_STATUS_GOOD;
-    }
-    if (s->scanning)
-        return SANE_STATUS_DEVICE_BUSY;
-    if (action != SANE_ACTION_SET_VALUE)
-        return SANE_STATUS_INVAL;
-    if (!(o->cap & SANE_CAP_SOFT_SELECT) || (o->cap & SANE_CAP_INACTIVE))
-        return SANE_STATUS_INVAL;
-
-    switch (n) {
-    case OPT_MODE: {
-        int i, ok = 0;
-        for (i = 0; mode_list[i]; i++)
-            if (!strcmp(val, mode_list[i]))
-                ok = 1;
-        if (!ok)
-            return SANE_STATUS_INVAL;
-        snprintf(s->mode, sizeof s->mode, "%s", (const char *)val);
-        if (!strcmp(s->mode, SANE_VALUE_SCAN_MODE_LINEART))
-            s->opt[OPT_THRESHOLD].cap &= ~SANE_CAP_INACTIVE;
-        else
-            s->opt[OPT_THRESHOLD].cap |= SANE_CAP_INACTIVE;
-        if (info)
-            *info |= SANE_INFO_RELOAD_OPTIONS | SANE_INFO_RELOAD_PARAMS;
-        break;
-    }
-    case OPT_RESOLUTION: {
-        SANE_Word v = nearest_res(*(SANE_Word *)val);
-        if (v != *(SANE_Word *)val && info)
-            *info |= SANE_INFO_INEXACT;
-        s->val[n] = v;
-        if (info)
-            *info |= SANE_INFO_RELOAD_PARAMS;
-        break;
-    }
-    case OPT_THRESHOLD: {
-        SANE_Word v = *(SANE_Word *)val;
-        if (v < 0 || v > 255)
-            return SANE_STATUS_INVAL;
-        s->val[n] = v;
-        break;
-    }
-    case OPT_CAL_CACHE:
-        s->val[n] = *(SANE_Word *)val ? SANE_TRUE : SANE_FALSE;
-        break;
-    case OPT_PREVIEW:
-        s->val[n] = *(SANE_Word *)val ? SANE_TRUE : SANE_FALSE;
-        if (info)
-            *info |= SANE_INFO_RELOAD_PARAMS;
-        break;
-    case OPT_TL_X:
-    case OPT_TL_Y:
-    case OPT_BR_X:
-    case OPT_BR_Y: {
-        SANE_Word v = *(SANE_Word *)val;
-        const SANE_Range *r = o->constraint.range;
-        if (v < r->min) v = r->min;
-        if (v > r->max) v = r->max;
-        if (v != *(SANE_Word *)val && info)
-            *info |= SANE_INFO_INEXACT;
-        s->val[n] = v;
-        if (info)
-            *info |= SANE_INFO_RELOAD_PARAMS;
-        break;
-    }
-    default:
-        return SANE_STATUS_INVAL;
-    }
+    } else
+        s->btn = 0;
+    *pressed = s->btn == n - OPT_BUTTON_SCAN + 1 ? SANE_TRUE : SANE_FALSE;
     return SANE_STATUS_GOOD;
 }
 
-SANE_Status ENTRY(get_parameters)(SANE_Handle h, SANE_Parameters *params)
+SANE_Status sane_control_option(SANE_Handle h, SANE_Int n, SANE_Action action,
+                                void *val, SANE_Int *info)
+{
+    v39_t *s = h;
+    SANE_Option_Descriptor *o;
+    SANE_Status st;
+    SANE_Int myinfo = 0;
+
+    if (info)
+        *info = 0;
+    if (n < 0 || n >= NUM_OPTIONS || !val)
+        return SANE_STATUS_INVAL;
+    o = &s->opt[n];
+    if (o->type == SANE_TYPE_GROUP || (o->cap & SANE_CAP_INACTIVE))
+        return SANE_STATUS_INVAL;
+
+    if (action == SANE_ACTION_GET_VALUE) {
+        if (n >= OPT_BUTTON_SCAN && n <= OPT_BUTTON_PDF)
+            return read_button(s, n, (SANE_Bool *)val);
+        if (n == OPT_MODE)
+            strcpy(val, s->val[OPT_MODE].s);
+        else
+            *(SANE_Word *)val = s->val[n].w;
+        return SANE_STATUS_GOOD;
+    }
+    if (action != SANE_ACTION_SET_VALUE || !SANE_OPTION_IS_SETTABLE(o->cap))
+        return SANE_STATUS_INVAL;
+    if (s->scanning)
+        return SANE_STATUS_DEVICE_BUSY;
+    st = sanei_constrain_value(o, val, &myinfo);
+    if (st != SANE_STATUS_GOOD)
+        return st;
+
+    switch (n) {
+    case OPT_MODE: {
+        char *m = strdup(val);
+        if (!m)
+            return SANE_STATUS_NO_MEM;
+        free(s->val[OPT_MODE].s);
+        s->val[OPT_MODE].s = m;
+        if (!strcmp(m, SANE_VALUE_SCAN_MODE_LINEART))
+            s->opt[OPT_THRESHOLD].cap &= ~SANE_CAP_INACTIVE;
+        else
+            s->opt[OPT_THRESHOLD].cap |= SANE_CAP_INACTIVE;
+        myinfo |= SANE_INFO_RELOAD_OPTIONS | SANE_INFO_RELOAD_PARAMS;
+        break;
+    }
+    case OPT_RESOLUTION:
+    case OPT_PREVIEW:
+    case OPT_TL_X:
+    case OPT_TL_Y:
+    case OPT_BR_X:
+    case OPT_BR_Y:
+        s->val[n].w = *(SANE_Word *)val;
+        myinfo |= SANE_INFO_RELOAD_PARAMS;
+        break;
+    case OPT_THRESHOLD:
+    case OPT_CAL_CACHE:
+        s->val[n].w = *(SANE_Word *)val;
+        break;
+    default:
+        return SANE_STATUS_INVAL;
+    }
+    if (info)
+        *info = myinfo;
+    return SANE_STATUS_GOOD;
+}
+
+SANE_Status sane_get_parameters(SANE_Handle h, SANE_Parameters *params)
 {
     v39_t *s = h;
     if (!s->scanning)
@@ -2004,135 +2032,181 @@ SANE_Status ENTRY(get_parameters)(SANE_Handle h, SANE_Parameters *params)
     return SANE_STATUS_GOOD;
 }
 
-SANE_Status ENTRY(start)(SANE_Handle h)
+SANE_Status sane_start(SANE_Handle h)
 {
     v39_t *s = h;
     SANE_Status st;
+    int fds[2];
 
     if (s->scanning)
         return SANE_STATUS_DEVICE_BUSY;
     calc_params(s);
-    s->cancel = 0;
-    s->qhead = s->qlen = 0;
-    s->qdone = 0;
+    s->cancelled = SANE_FALSE;
+    s->reader_status = SANE_STATUS_CANCELLED;   /* until a reader reports otherwise */
     s->delivered = 0;
     s->total = (size_t)s->sp.bpl * s->sp.out_h;
-    s->thread_status = SANE_STATUS_GOOD;
-    s->transfers_left = 0;
-    s->qcap = 32u << 20;
-    if (s->qcap < (size_t)s->sp.bpl * 4)
-        s->qcap = (size_t)s->sp.bpl * 4;
-    free(s->q);
-    s->q = malloc(s->qcap);
-    if (!s->q)
-        return SANE_STATUS_NO_MEM;
 
-    DBG(1, "start: %s %d dpi (hw %d), %d x %d px, y %.3f\"\n", s->mode, s->sp.out_dpi,
-        s->sp.hw->dpi, s->sp.out_w, s->sp.out_h, s->sp.y_in);
-    s->scanning = 1;
+    DBG(1, "sane_start: %s %d dpi (hw %d), %d x %d px, y %.3f\"\n", s->val[OPT_MODE].s,
+        s->sp.out_dpi, s->sp.hw->dpi, s->sp.out_w, s->sp.out_h, s->sp.y_in);
     st = do_calibrate_and_start(s);
     if (st != SANE_STATUS_GOOD) {
-        DBG(1, "scan setup failed: %s\n", status_str(st));
-        s->scanning = 0;
+        DBG(1, "sane_start: scan setup failed: %s\n", status_str(st));
         return st;
     }
-    if (pthread_create(&s->thread, NULL, reader_thread, s) != 0) {
-        s->cancel = 1;
-        stop_scan(s);
+    /* the image pass is running from here on: every exit must cancel it */
+    s->scanning = SANE_TRUE;
+    if (pipe(fds) < 0) {
+        s->cancelled = SANE_TRUE;
+        finish_scan(s);
+        return SANE_STATUS_IO_ERROR;
+    }
+#ifdef F_SETPIPE_SZ
+    fcntl(fds[1], F_SETPIPE_SZ, 1 << 20);
+#endif
+    s->pipe_r = fds[0];
+    s->reader_fd = fds[1];
+    s->reader = sanei_thread_begin(reader_task, s);
+    if (!sanei_thread_is_valid(s->reader)) {
+        DBG(1, "sane_start: cannot start reader\n");
+        close(fds[1]);
+        s->cancelled = SANE_TRUE;
+        finish_scan(s);
         return SANE_STATUS_NO_MEM;
     }
-    s->thread_running = 1;
+    /*
+     * From here the reader owns the write end and closes it when done.  A
+     * forked reader has its own copy, so close ours; a reader thread shares
+     * it, so leave it alone.
+     */
+    if (sanei_thread_is_forked())
+        close(fds[1]);
+    if (s->non_blocking)
+        fcntl(s->pipe_r, F_SETFL, fcntl(s->pipe_r, F_GETFL) | O_NONBLOCK);
     return SANE_STATUS_GOOD;
 }
 
-SANE_Status ENTRY(read)(SANE_Handle h, SANE_Byte *buf, SANE_Int max, SANE_Int *len)
+/* drain whatever the device still sends after 1E 18 (cancel) */
+static void device_cancel(v39_t *s)
+{
+    uint8_t *junk = malloc(1 << 18);
+    int i;
+
+    DBG(1, "cancelling the image pass\n");
+    op2(s, 0x1E, 0x18);
+    for (i = 0; junk && i < 100000; i++) {
+        size_t n = 1 << 18;
+        sanei_usb_set_timeout(1000);
+        if (sanei_usb_read_bulk(s->dn, junk, &n) != SANE_STATUS_GOOD)
+            break;
+    }
+    free(junk);
+    wait_idle(s, 30);
+}
+
+/* ends a scan: stops and reaps the reader, then cancels the device if needed */
+static void reap_reader(v39_t *s)
+{
+    if (sanei_thread_is_valid(s->reader)) {
+        int status = SANE_STATUS_CANCELLED;
+        sanei_thread_waitpid(s->reader, &status);
+        s->reader_status = status;
+        sanei_thread_invalidate(s->reader);
+    }
+}
+
+static void finish_scan(v39_t *s)
+{
+    if (!s->scanning)
+        return;
+    if (s->cancelled && s->pipe_r >= 0) {
+        /* the reader's next write fails with EPIPE and it stops */
+        close(s->pipe_r);
+        s->pipe_r = -1;
+    }
+    reap_reader(s);
+    if (s->pipe_r >= 0) {
+        close(s->pipe_r);
+        s->pipe_r = -1;
+    }
+    if (s->reader_status != SANE_STATUS_GOOD)
+        device_cancel(s);
+    s->scanning = SANE_FALSE;
+}
+
+SANE_Status sane_read(SANE_Handle h, SANE_Byte *buf, SANE_Int max, SANE_Int *len)
 {
     v39_t *s = h;
-    size_t n;
+    ssize_t n;
 
     *len = 0;
     if (!s->scanning)
-        return s->cancel ? SANE_STATUS_CANCELLED : SANE_STATUS_EOF;
-    pthread_mutex_lock(&s->mtx);
-    while (s->qlen == 0 && !s->qdone && !s->cancel)
-        pthread_cond_wait(&s->cond, &s->mtx);
-    if (s->cancel) {
-        pthread_mutex_unlock(&s->mtx);
-        stop_scan(s);
+        return s->cancelled ? SANE_STATUS_CANCELLED : SANE_STATUS_EOF;
+    if (s->cancelled) {
+        finish_scan(s);
         return SANE_STATUS_CANCELLED;
     }
-    if (s->qlen == 0) {
-        SANE_Status st = s->thread_status;
-        pthread_mutex_unlock(&s->mtx);
-        stop_scan(s);
-        return st == SANE_STATUS_GOOD ? SANE_STATUS_EOF : st;
+    do
+        n = read(s->pipe_r, buf, max);
+    while (n < 0 && errno == EINTR);
+    /*
+     * Frontends such as scanimage call sane_cancel() from a signal handler,
+     * which can run while this read is blocked; the cancel then has already
+     * closed the pipe and stopped the scan.
+     */
+    if (s->cancelled || !s->scanning) {
+        finish_scan(s);
+        return SANE_STATUS_CANCELLED;
     }
-    n = s->qlen < (size_t)max ? s->qlen : (size_t)max;
-    if (n > s->qcap - s->qhead)
-        n = s->qcap - s->qhead;
-    memcpy(buf, s->q + s->qhead, n);
-    s->qhead = (s->qhead + n) % s->qcap;
-    s->qlen -= n;
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return SANE_STATUS_GOOD;
+        DBG(1, "sane_read: pipe read failed: %s\n", strerror(errno));
+        s->cancelled = SANE_TRUE;
+        finish_scan(s);
+        return SANE_STATUS_IO_ERROR;
+    }
+    if (n == 0) {
+        /* reader finished: was everything delivered? */
+        SANE_Status status;
+        reap_reader(s);
+        status = s->reader_status;
+        if (status == SANE_STATUS_GOOD && s->delivered != s->total) {
+            DBG(1, "sane_read: got %zu of %zu bytes\n", s->delivered, s->total);
+            status = SANE_STATUS_IO_ERROR;
+        }
+        finish_scan(s);
+        return status == SANE_STATUS_GOOD ? SANE_STATUS_EOF : status;
+    }
     s->delivered += n;
-    pthread_cond_broadcast(&s->cond);
-    pthread_mutex_unlock(&s->mtx);
     *len = (SANE_Int)n;
     return SANE_STATUS_GOOD;
 }
 
-/* ends a scan: joins the reader, cancels and drains the device if needed */
-static void stop_scan(v39_t *s)
-{
-    if (!s->scanning)
-        return;
-    if (s->thread_running) {
-        pthread_mutex_lock(&s->mtx);
-        if (s->cancel)
-            pthread_cond_broadcast(&s->cond);
-        pthread_mutex_unlock(&s->mtx);
-        pthread_join(s->thread, NULL);
-        s->thread_running = 0;
-    }
-    if (s->transfers_left > 0) {
-        uint8_t junk[16384];
-        int got, r, i;
-        DBG(1, "cancelling scan (%d transfers left)\n", s->transfers_left);
-        op2(s, 0x1E, 0x18);
-        /* drain whatever the device still sends */
-        for (i = 0; i < 100000; i++) {
-            r = libusb_bulk_transfer(s->h, EP_IN, junk, sizeof junk, &got, 1000);
-            if (r != 0 && r != LIBUSB_ERROR_OVERFLOW)
-                break;
-        }
-        s->transfers_left = 0;
-        wait_idle(s, 30);
-    }
-    free(s->q);
-    s->q = NULL;
-    s->scanning = 0;
-}
-
-void ENTRY(cancel)(SANE_Handle h)
+void sane_cancel(SANE_Handle h)
 {
     v39_t *s = h;
     if (!s->scanning)
         return;
-    pthread_mutex_lock(&s->mtx);
-    s->cancel = 1;
-    pthread_cond_broadcast(&s->cond);
-    pthread_mutex_unlock(&s->mtx);
-    stop_scan(s);
+    s->cancelled = SANE_TRUE;
+    finish_scan(s);
 }
 
-SANE_Status ENTRY(set_io_mode)(SANE_Handle h, SANE_Bool non_blocking)
+SANE_Status sane_set_io_mode(SANE_Handle h, SANE_Bool non_blocking)
 {
-    (void)h;
-    return non_blocking ? SANE_STATUS_UNSUPPORTED : SANE_STATUS_GOOD;
+    v39_t *s = h;
+    s->non_blocking = non_blocking;
+    if (s->scanning && s->pipe_r >= 0) {
+        int fl = fcntl(s->pipe_r, F_GETFL);
+        fcntl(s->pipe_r, F_SETFL, non_blocking ? fl | O_NONBLOCK : fl & ~O_NONBLOCK);
+    }
+    return SANE_STATUS_GOOD;
 }
 
-SANE_Status ENTRY(get_select_fd)(SANE_Handle h, SANE_Int *fd)
+SANE_Status sane_get_select_fd(SANE_Handle h, SANE_Int *fd)
 {
-    (void)h;
-    (void)fd;
-    return SANE_STATUS_UNSUPPORTED;
+    v39_t *s = h;
+    if (!s->scanning || s->pipe_r < 0)
+        return SANE_STATUS_INVAL;
+    *fd = s->pipe_r;
+    return SANE_STATUS_GOOD;
 }

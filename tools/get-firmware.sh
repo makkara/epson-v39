@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Download Epson's Windows driver package for the Perfection V39, extract
 # the scanner firmware (esfw010c.bin) and install it where the epsonv39
 # SANE backend looks for it.

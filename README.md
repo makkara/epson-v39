@@ -32,8 +32,10 @@ Tested on Fedora 44 with firmware 1.42 (the version in Epson's current
 driver package). Other Linux distributions should work too; please
 [report](#reporting-problems) how it goes.
 
-Not supported: other scanner models. Epson's driver package lists only
-`04b8:013d` for this firmware.
+Not tested: the **Perfection V19** (`04b8:013c`). Epson's Windows
+package for it contains the same firmware and scan code as the V39 one.
+To try it, uncomment the `usb 0x04b8 0x013c` line in
+`/etc/sane.d/epsonv39.conf`, and please report the result.
 
 ## Getting started
 
@@ -44,13 +46,13 @@ You need about five minutes and an internet connection.
 Fedora:
 
 ```sh
-sudo dnf install gcc make pkgconf-pkg-config libusb1-devel sane-backends-devel sane-backends 7zip curl
+sudo dnf install gcc make pkgconf-pkg-config libusb1-devel sane-backends 7zip curl
 ```
 
 Debian, Ubuntu, Linux Mint, Raspberry Pi OS:
 
 ```sh
-sudo apt install build-essential pkg-config libusb-1.0-0-dev libsane-dev sane-utils 7zip curl
+sudo apt install build-essential pkg-config libusb-1.0-0-dev sane-utils 7zip curl
 ```
 
 Use `p7zip-full` instead of `7zip` on older releases (Debian 12, Ubuntu 22.04).
@@ -68,6 +70,13 @@ git clone https://github.com/makkara/epson-v39.git
 cd epson-v39/sane
 make
 ```
+
+The driver uses SANE's internal libraries for USB access, configuration
+and threads. Distributions don't install those, so the first `make`
+downloads the sane-backends 1.4.0 source (7.5 MB), checks its SHA-256,
+and builds the parts it needs. This takes about ten seconds. If you
+already have a configured sane-backends source tree, use it with
+`make SANE_SRC=/path/to/sane-backends`.
 
 ### 3. Get the scanner firmware
 
@@ -220,7 +229,7 @@ computer.
 
 | path | contents |
 |---|---|
-| [`sane/`](sane/) | the SANE driver ([notes for developers](sane/README.md)) |
+| [`sane/`](sane/) | the SANE driver ([notes for developers](sane/README.md)); `add-to-sane-backends.py` adds it to a sane-backends source tree |
 | [`PROTOCOL.md`](PROTOCOL.md) | the scanner's USB protocol, worked out by observing Epson's Windows driver |
 | [`ref/`](ref/) | recorded command sequences from Epson's driver for every mode (no image data) |
 | [`tools/get-firmware.sh`](tools/get-firmware.sh) | firmware download script |
@@ -228,9 +237,11 @@ computer.
 
 ## License
 
-The driver, tools and documentation are under the [MIT License](LICENSE):
-use, change and share them freely, including in commercial products.
-This doesn't cover the scanner firmware (see below).
+This project uses the same license as sane-backends: the
+[GNU General Public License, version 2 or later](COPYING). The SANE
+driver also carries SANE's standard linking exception, so programs that
+load it aren't affected by the GPL. See [LICENSE](LICENSE). This doesn't
+cover the scanner firmware (see below).
 
 ## Legal
 

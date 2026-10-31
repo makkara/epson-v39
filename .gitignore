@@ -2,3 +2,6 @@ work/
 __pycache__/
 sane/libsane-epsonv39.so*
 *.bin
+sane/build/
+sane/epsonv39.conf
+sane/sane-epsonv39.5

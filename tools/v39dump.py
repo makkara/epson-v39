@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Pretty-print a raw USB capture made with `esitrace -r file.bin`.
 
 Each record in the capture is: direction byte ('>' host->device, '<'

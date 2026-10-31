@@ -8,14 +8,23 @@ file describes how the backend is put together. The protocol itself is in
 
 | file | purpose |
 |---|---|
-| `epsonv39.c` | the whole backend (libusb, one file, no sanei dependency) |
-| `Makefile` | out-of-tree build; finds the SANE backend directory itself |
-| `epsonv39.conf` | optional config: `firmware /path/to/esfw010c.bin` |
+| `epsonv39.c` | the whole backend, written as an in-tree sane-backends backend |
+| `epsonv39.conf.in` | config template: `firmware` path and `usb` device lines |
+| `sane-epsonv39.man` | man page, `sane-epsonv39(5)` |
+| `epsonv39.desc` | device description for SANE's supported-device lists |
+| `Makefile` | standalone build against a downloaded sane-backends release |
+| `add-to-sane-backends.py` | adds the backend to a sane-backends source tree |
 | `dll.d-epsonv39` | installed as `/etc/sane.d/dll.d/epsonv39` so the dll backend loads it |
 | `60-epsonv39.rules` | udev rule: desktop user access (`uaccess`) |
 
-The entry points are exported as `sane_epsonv39_*`, the names the dll
-meta-backend looks for.
+The backend carries the same license header as the other sane-backends
+backends: GPL-2.0-or-later with the SANE linking exception.
+
+The backend uses SANE's internal libraries: `sanei_usb` for USB,
+`sanei_config` for the config file, `sanei_debug` for logging,
+`sanei_thread` for the reader, and `sanei_constrain_value` for option
+checks. Entry points are named through `sanei_backend.h`, so they come
+out as `sane_epsonv39_*`, the names the dll backend looks for.
 
 ## Structure of `epsonv39.c`
 
@@ -40,12 +49,19 @@ meta-backend looks for.
 5. **Positioning and the image pass** (§7.1). After the move to the scan
    start (`1E 01 0x1000`, `1E 05`), the backend waits until the move has
    started and finished. Then it sends the final setup and `1E 47`.
-6. **Reader thread.** This thread reads transfers, unscrambles the
-   interleaved/phase-grouped raw lines (§7.2), and crops x. It averages
-   the extra vertical lines at 300 dpi and area-averages to the output
-   resolution below 300 dpi. It converts to RGB, gray or 1-bit. Finished
-   lines go into a 32 MiB ring buffer that `sane_read` drains.
-7. **Cancel.** `1E 18`, then IN data is drained until a 1 s time-out.
+6. **Reader task** (`sanei_thread`: a thread on Linux, a process
+   elsewhere). It reads transfers, unscrambles the interleaved and
+   phase-grouped raw lines (§7.2), and crops x. It averages the extra
+   vertical lines at 300 dpi and area-averages to the output resolution
+   below 300 dpi. It converts to RGB, gray or 1-bit and writes finished
+   lines into a pipe. Writes don't block. Up to 64 MiB waits inside the
+   reader, so a slow frontend doesn't stall the USB stream. The pipe
+   gives `sane_get_select_fd` and non-blocking reads.
+7. **Cancel.** `sane_cancel` closes the frontend end of the pipe, and the
+   reader stops at its next write. If not every transfer was read, the
+   backend sends `1E 18` and drains IN data until a 1 s time-out.
+   `sane_cancel` may run from a signal handler while `sane_read` is
+   blocked; `sane_read` then returns `SANE_STATUS_CANCELLED`.
 
 ## Device rules that matter
 
@@ -60,30 +76,45 @@ These cost real debugging time; see PROTOCOL.md §8.1.
   It then NAKs all OUT traffic until it is replugged. Never USB-reset it.
   That can drop it off the bus completely.
 
-## Building without root
+## Building
 
-On a system without the -devel packages, the headers can come from
-extracted packages:
+`make` downloads sane-backends 1.4.0 into `build/` (GitLab, then
+Fedora's copy of the same file; the SHA-256 is checked either way). It
+runs its `configure` only to get `config.h` and the sanei Makefiles,
+builds the five sanei objects, and links them into
+`libsane-epsonv39.so.1`. No autotools are needed. `make SANE_SRC=...`
+uses an existing configured tree instead.
+
+For a sane-backends merge request:
 
 ```sh
-dnf download sane-backends-devel libusb1-devel     # or apt-get download ...
-mkdir sysroot && for r in *.rpm; do rpm2cpio $r | (cd sysroot && cpio -idm); done
-PKG_CONFIG_PATH=$PWD/sysroot/usr/lib64/pkgconfig PKG_CONFIG_SYSROOT_DIR=$PWD/sysroot \
-    make DEP_LIBS=/usr/lib64/libusb-1.0.so.0
+git clone https://gitlab.com/sane-project/backends.git sane-backends
+./add-to-sane-backends.py sane-backends
+cd sane-backends && ./autogen.sh && ./configure BACKENDS=epsonv39 && make
 ```
+
+The script copies the backend, config template, man page and description
+file, and registers them in `configure.ac`, `backend/Makefile.am`,
+`backend/dll.conf.in`, `doc/Makefile.am`, `doc/sane.man` and
+`po/POTFILES.in`, next to `epsonds`. On the 1.4.0 release,
+`autogen.sh`, configure and make succeed, `tools/sane-desc` accepts the
+description file, and the in-tree library scans. The script also applies
+cleanly to master as of commit `f4bd073` (October 2026); a full build of
+master has not been run.
 
 Test without installing by pointing the dll backend at a private config
 directory:
 
 ```sh
 mkdir -p /tmp/sanecfg && echo epsonv39 > /tmp/sanecfg/dll.conf
+cp epsonv39.conf /tmp/sanecfg/
 SANE_CONFIG_DIR=/tmp/sanecfg LD_LIBRARY_PATH=$PWD scanimage -d epsonv39 -o scan.pnm
 ```
 
 `SANE_DEBUG_EPSONV39` sets the log level. 1 shows errors and scan
 summaries. 2 adds calibration results and timings. 3 adds every AFE/LED
-measurement. 4 adds every image transfer and button reading. 5 adds every
-USB write and read.
+measurement and the reader's result. 4 adds every image transfer and
+button reading. `SANE_DEBUG_SANEI_USB=5` logs every USB transfer.
 
 ## Open items
 

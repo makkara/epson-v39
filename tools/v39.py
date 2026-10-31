@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Prototype driver for the EPSON Perfection V39 / GT-S650 (04b8:013d).
 
 Speaks the device protocol documented in PROTOCOL.md directly - no Epson

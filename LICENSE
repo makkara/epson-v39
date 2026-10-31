@@ -1,21 +1,26 @@
-MIT License
+epson-v39 - free SANE backend and protocol documentation for the
+EPSON Perfection V39 / GT-S650
 
-Copyright (c) 2026 The epson-v39 contributors
+Copyright (C) 2026 The epson-v39 contributors
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This project uses the same license as sane-backends.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+All code and documentation are free software; you can redistribute them
+and/or modify them under the terms of the GNU General Public License as
+published by the Free Software Foundation; either version 2 of the
+License, or (at your option) any later version. The full text of the
+GNU General Public License version 2 is in the file COPYING.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The SANE backend (sane/epsonv39.c) additionally carries the SANE
+linking exception, worded exactly as in sane-backends: linking a SANE
+library with other files to produce an executable does not by itself
+cause the resulting executable to be covered by the GNU General Public
+License. See the header of sane/epsonv39.c for the full text.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+General Public License for more details.
+
+The scanner firmware (esfw010c.bin) is Epson's copyrighted software. It
+is not part of this project and is not covered by this license.

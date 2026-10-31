@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * esitrace - protocol tracer for the EPSON Perfection V39 (GT-S650, 04b8:013d)
  *

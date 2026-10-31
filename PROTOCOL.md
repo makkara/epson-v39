@@ -626,7 +626,12 @@ bookkeeping only. A driver can send the same layout. **[inferred]**
   then cleared, or until 300 ms pass with no sign of motion.
 * Cancelling with `1E 18` in the middle of the image pass works. Read
   and discard IN data until a 1 s timeout; the device is then idle and
-  ready for the next scan.
+  ready for the next scan. With `sanei_usb`, that final time-out also
+  clears the halt on the IN endpoint; the device tolerates it, and the
+  next scan works normally.
+* If the host stops reading during the image pass for about a minute
+  and the transfer is then abandoned, the device can wedge (OUT NAKed,
+  no IN data) until it is replugged. Read the image without long pauses.
 * A USB port reset on a wedged device made it fail to re-enumerate
   (`error -71`). Only a physical replug recovers it.
 

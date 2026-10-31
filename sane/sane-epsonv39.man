@@ -1,0 +1,152 @@
+.TH sane\-epsonv39 5 "31 Oct 2026" "@PACKAGEVERSION@" "SANE Scanner Access Now Easy"
+.IX sane\-epsonv39
+.SH NAME
+sane\-epsonv39 \- SANE backend for the Epson Perfection V39 (GT\-S650) USB flatbed scanner
+.SH DESCRIPTION
+The
+.B sane\-epsonv39
+library implements a SANE (Scanner Access Now Easy) backend for the
+Epson Perfection V39, sold as GT\-S650 in Japan (USB ID 04b8:013d).
+.PP
+This scanner is "host-based": it has no firmware in flash and does not
+understand Epson's ESC/I command language. The backend uploads the
+firmware after every power-on, calibrates the sensor before each scan, and
+assembles the image on the host. It was written from an independent
+description of the USB protocol and contains no Epson code.
+.SH HARDWARE SUPPORT
+.TP
+.B Perfection V39 / GT\-S650 (04b8:013d)
+Colour, gray and line-art at 75 to 4800 dpi over the full 8.5" x 11.7"
+(216 x 297 mm) area. The hardware scans at 300, 600, 1200, 2400 and
+4800 dpi; 75 to 200 dpi are produced by averaging a 300 dpi scan. Gray at
+4800 dpi is averaged from a colour scan. The four front-panel buttons are
+reported as sensor options.
+.TP
+.B Perfection V19 (04b8:013c)
+Untested. Epson's Windows package for the V19 contains the same firmware
+and scan code as the V39 one. Enable it with a
+.B usb
+line in the configuration file and please report the result.
+.SH FIRMWARE
+The backend needs Epson's firmware file
+.IR esfw010c.bin ,
+which may not be distributed with SANE. It is contained in Epson's Windows
+driver package for the Perfection V39
+.RI ( V39_EScan_3950_AM.exe ,
+inside
+.IR ModUsd.cab ),
+which can be unpacked with
+.BR 7z (1).
+The backend looks for the file in this order:
+.IP 1. 4
+the path in the environment variable
+.BR SANE_EPSONV39_FIRMWARE ;
+.IP 2. 4
+the
+.B firmware
+line of the configuration file;
+.IP 3. 4
+.I $XDG_DATA_HOME/sane/epsonv39/
+or
+.IR ~/.local/share/sane/epsonv39/ ;
+.IP 4. 4
+.IR @DATADIR@/sane/epsonv39/ ,
+.IR /usr/share/sane/epsonv39/ ,
+.I /usr/share/iscan/
+(Epson's own Linux plugin) and
+.IR /usr/lib/firmware/epson/ .
+.PP
+After a power-on, the first scan takes about ten seconds longer while the
+firmware starts and the scanner initialises.
+.SH OPTIONS
+.TP
+.B \-\-mode Color|Gray|Lineart
+Selects the scan mode. Line-art is a threshold of the gray scan.
+.TP
+.B \-\-resolution 75|100|150|200|300|600|1200|2400|4800
+Selects the resolution in dpi.
+.TP
+.B \-\-threshold 0..255
+Black/white threshold in line-art mode (default 128).
+.TP
+.B \-\-preview[=(yes|no)]
+Scans at 75 dpi.
+.TP
+.B \-l \-t \-x \-y
+Top-left corner, width and height of the scan area in mm.
+.TP
+.B \-\-calibration\-cache[=(yes|no)]
+The analog front-end offsets and LED exposure found by a scan are kept in
+scanner RAM until power-off. A later scan in the same mode and resolution
+checks them with one read each instead of searching again, which saves
+1 to 3 seconds. The dark and white shading passes run on every scan. Set
+to
+.B no
+to force a full calibration (default yes).
+.TP
+.B \-\-scan \-\-copy \-\-email \-\-pdf
+Read-only sensors for the Start, Copy, Scan to E\-mail and PDF buttons.
+They are true only while the button is held down, so tools such as
+.BR scanbd (8)
+must poll them several times a second. They read as released during a
+scan.
+.SH CONFIGURATION FILE
+The configuration file
+.I @CONFIGDIR@/epsonv39.conf
+supports these lines; empty lines and lines starting with a hash mark (#)
+are ignored:
+.TP
+.BI firmware " path"
+Location of
+.IR esfw010c.bin .
+.TP
+.BI usb " vendor product"
+A USB device to use, for example
+.BR "usb 0x04b8 0x013c" .
+Without any
+.B usb
+line, the backend uses 04b8:013d only.
+.SH FILES
+.TP
+.I @CONFIGDIR@/epsonv39.conf
+The backend configuration file.
+.TP
+.I @LIBDIR@/libsane\-epsonv39.a
+The static library implementing this backend.
+.TP
+.I @LIBDIR@/libsane\-epsonv39.so
+The shared library implementing this backend (present on systems that
+support dynamic loading).
+.SH ENVIRONMENT
+.TP
+.B SANE_CONFIG_DIR
+This environment variable specifies the list of directories that may
+contain the configuration file. See
+.BR sane\-dll (5).
+.TP
+.B SANE_EPSONV39_FIRMWARE
+Path of the firmware file; overrides all other locations.
+.TP
+.B SANE_DEBUG_EPSONV39
+Debug level: 1 shows errors and scan summaries, 2 adds calibration
+results and timings, 3 every AFE and LED measurement and the reader's
+result, 4 every image transfer and button reading. USB traffic is logged
+with
+.BR SANE_DEBUG_SANEI_USB .
+.SH KNOWN ISSUES
+If the scanner stops answering (time-outs), unplug it or switch it off and
+on; the backend uploads the firmware again. A USB reset in software can
+leave it unable to reconnect until it is replugged.
+.PP
+Only one calibration-cache entry exists, so alternating between modes
+recalibrates every time.
+.SH SEE ALSO
+.BR sane (7),
+.BR sane\-usb (5),
+.BR scanimage (1),
+.BR scanbd (8)
+.PP
+The protocol description and reference captures:
+.I https://github.com/makkara/epson-v39
+.SH AUTHOR
+makkara
