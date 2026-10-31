@@ -267,6 +267,88 @@ class V39:
         self._ack()
 
 
+# --------------------------------------------------------------------------
+# calibration maths (bit-exact with Epson's esxi010c.dll, PROTOCOL.md 7.4)
+
+def shading_table(dark, white):
+    """Build the 1E 84 type-06 shading table from the 16-bit reference passes.
+
+    dark, white: numpy uint16 arrays (lines, planes, W) in raw (interleaved)
+    pixel order.  Returns (table bytes, 1E 42 words[9], 1E 41 byte-11 low
+    bits, 1E 41 byte 15).
+    """
+    import numpy as np
+    _, planes, W = dark.shape
+    # A: per-pixel dark, averaged over all lines and planes (integer)
+    A = dark.astype(np.int64).sum((0, 1)) // (dark.shape[0] * planes)
+    blk = [int(A[0::2].min()), int(A[1::2].min())]          # per sensor half
+    rng = max(int(A[0::2].max()) - blk[0], int(A[1::2].max()) - blk[1])
+    abits_sel, sh_a = 0, 0                                  # A field: 8 - abits_sel bits
+    for lim, sel in ((0x20, 3), (0x40, 2), (0x80, 1), (0x100, 0)):
+        if rng < lim:
+            abits_sel = sel
+            break
+    else:
+        sh_a = next((k for k in range(1, 8) if rng < (0x100 << k)), 8)
+    A = A - np.where(np.arange(W) % 2 == 0, blk[0], blk[1])
+    # B: white in 4 equal groups of lines -> integer mean per group -> max
+    # over groups, minus A; u16 arithmetic (dummy pixels wrap around)
+    n = white.shape[0] // 4
+    grp = [white[g * n:(g + 1) * n].astype(np.int64).sum(0) // n for g in range(4)]
+    B = (np.maximum.reduce(grp) - A[None, :]) & 0xFFFF
+    base = B.min(1)                                         # per colour plane
+    rng_b = int((B.max(1) - base).max())
+    sh_b = 0
+    while rng_b >= (1 << (8 + abits_sel + sh_b)):
+        sh_b += 1
+    T = (((B - base[:, None]) >> sh_b) << (8 - abits_sel)) | (A >> sh_a)[None, :]
+    bases = [int(b) for b in base] if planes == 3 else [int(base[0])] * 3
+    words = bases + blk * 3
+    return T.astype("<u2").tobytes(), words, abits_sel, (sh_b << 4) | sh_a
+
+
+def box8_per_half(line):
+    """8-pixel box averages within each sensor half (raw order: stride 2)."""
+    import numpy as np
+    return [np.convolve(line[h::2].astype(np.int64), np.ones(8, np.int64), "valid") // 8
+            for h in (0, 1)]
+
+
+AFE_WINDOW = (0x380, 0x480)          # relaxed variant: (0x300, 0x500)
+
+
+def afe_measure(dark4):
+    """Per-half AFE measure: min of 8-px box averages of the line mean."""
+    m = dark4.astype("int64").sum(0) // dark4.shape[0]
+    return [int(b.min()) for b in box8_per_half(m)]
+
+
+def afe_next(offset, bit, measured):
+    """SAR update for one sensor half; start with offset=0x80, bit=0x40.
+
+    in window -> done; too low -> keep the last bit and try the next one;
+    too high -> clear the last bit (bit << 1) and try the next one.
+    """
+    lo, hi = AFE_WINDOW
+    if lo <= measured <= hi or bit == 0:
+        return offset, 0, True
+    if measured > hi:
+        offset &= ~(bit << 1)
+    return offset | bit, bit >> 1, False
+
+
+def led_measure(plane4):
+    """LED measure: max of 8-px box averages of the 4-line mean (8-bit)."""
+    m = plane4.astype("int64").sum(0) // plane4.shape[0]
+    return int(max(b.max() for b in box8_per_half(m)))
+
+
+def led_targets(gain43=0x8000):
+    """(low, target, high) peak levels; gain43 = that colour's 1E 43 word."""
+    g = max(gain43, 0x8000)
+    return 0x698000 // g, 0x6B8000 // g, 0x6D8000 // g     # 211, 215, 219
+
+
 def main():
     dev = V39(open_transport())
     print("status %02x" % dev.status())

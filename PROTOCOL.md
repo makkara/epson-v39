@@ -198,7 +198,7 @@ same value appears in status bits. **[inferred]**
 | `1E 31` | S | 18 bytes AFE: `u16 offset[6]` (left half R,G,B, right half R,G,B), `u16 gain[3]` (always `0x3A`). **[confirmed]** |
 | `1E 92` | Q | → 18 bytes: `u16 offL, 0, 0, offR, 0, 0, gain, 0, 0` (read-back) **[confirmed]** |
 | `1E 42` | S | 18 bytes: `u16 base[3]` (per colour), then `u16 black_L, black_R` repeated for R, G, B. All zeros during the AFE/LED search. See §7.4. **[confirmed]** |
-| `1E 43` | S | 12 bytes: six u16 near `0x8000`, e.g. `DB 7F E2 7F 00 80 …`; per-channel/half gain, Q15 ≈ 1.0. **[inferred]** |
+| `1E 43` | S | 12 bytes: six u16 near `0x8000`, e.g. `DB 7F E2 7F 00 80 …`; per-colour gain, Q15 ≈ 1.0. The interpreter also uses these words (clamped to ≥ `0x8000`) to scale the LED targets (§7.4). **[partly exact]** |
 
 `1E 22` (40 bytes):
 
@@ -234,13 +234,14 @@ u32 out_res   u32 scan_yres   u32 y_out   u32 y_scan   u32 width_px   u32 lines 
 | 0–1 | u16 first pixel (constant `0x015F` = 351) **[inferred]** | |
 | 2–3 | u16 end pixel = 351 + W | `0B7F` (W=2592 @300), `158F` (5168 @600), `29BF` (10336 @1200) |
 | 4–7 | u32 number of lines | `0x384` = 900 |
-| 8 | **output format**: `00` = 16-bit raw (no shading), `01` = 8-bit. Tested by patching only this byte. **[confirmed]** | |
+| 8 | **output format**: `00` = 16-bit raw (no shading), `01` = 8-bit. Tested by patching only this byte. In the interpreter the high nibble is a line-period speed code (`0x10`…`0xB0`), which is 0 in all captured modes. **[confirmed]** | |
 | 9 | `01` normal; `04`/`02` for the white-reference pass | |
 | 10 | `02` (300/600 colour), `01` (gray, 1200 colour), `03` (white pass) **[unknown]** | |
-| 11–12 | `80 80` image scan, `40 00` white pass, `00 00` dark/AFE passes | |
+| 11 | bit 7 = **shading on**, bits 0–1 = shading-table field split `sel` (§7.4); `40` white pass, `00` dark/AFE passes. **[exact for image scans]** | `80` |
+| 12 | `80` image scan, `00` calibration passes | |
 | 13 | `01` gray and AFE dark reads (one plane), `00` colour **[inferred]** | |
 | 14 | `00` | |
-| 15 | `81` @300, `72` @600/1200 **[unknown]** | |
+| 15 | shading-table shifts: high nibble = gain shift shB, low nibble = dark shift shA (§7.4). **[exact]** | `81` @300, `72` @600/1200 |
 | 16–17 | `80 A0` image scan, `80 80` white pass, `80 00` dark passes | |
 
 Bytes 9–17 together select shading, LED gating and the plane layout.
@@ -405,69 +406,99 @@ colour.
 
 ### 7.4 Calibration maths
 
-Derived from the four captures (300 gray, 300/600/1200 colour) and checked
-on hardware with `tools/v39replay.py`, which re-sends Epson's command
-stream with chosen values changed.
+Everything in this section was read out of `esxi010c.dll` (function
+addresses are given for reference). It was then checked against all four
+captures and on hardware. Implementations are in `tools/v39.py`
+(`shading_table`, `afe_measure`/`afe_next`, `led_measure`/`led_targets`).
 
-**AFE offsets** (`1E 31`): run with all six offsets equal, LEDs off,
-reading 4 dark lines (16-bit, one plane) per step. The search is binary
-over 128…192: `128, 192, 160, 144, 136, 132, 134|130, 131|133`. The dark
-level rises ≈230 counts (of 65535) per offset step. The search stops at
-the lowest offset whose dark mean exceeds ≈1100. The interpreter then
-re-runs the search after the LED search and may lower one half by 1
-(e.g. gray @300: `134,134,134,133,133,133`); that rule is not fully
-determined. Results seen: 134/133 @300, 131 @600/1200, which gives dark
-levels ≈1000–1300. **[confirmed sequence, approximate target]** The exact
-choice hardly matters, because the black level below is measured
-afterwards.
-
-**LED exposure** (`1E 22` `led_duty[3]`): start at 135 (@300), 320
-(@600) or 640 (@1200) for all three colours. Read 4 lines, 8-bit,
-unshaded. Update each colour by `duty_new = duty × target / mean`, with
-targets ≈ R 170, G 172.5, B 167.5 (8-bit means). Stop after 2–3 rounds or
-when a channel is within ~±1. Final duties: (320, 292, 172) @300,
-(605, 570, 337) @600, (1225, 1215, 700) @1200. **[confirmed]**
-
-**Black level** (`1E 42` words 3–8): from the 32-line 16-bit dark pass,
-average each pixel over all lines and colour planes, then per sensor half
-`black = floor(min over x of that average)`. This matches exactly:
-`1102/810` gray @300, `1112/1053` colour @300, `940/732` @600.
-**[confirmed]**
-
-**Shading table** (`1E 84` type `06`): per pixel and plane, in raw
-(interleaved) order, from the mean of the white pass `w`:
+**AFE offsets** (`1E 31`, `0x180003F20` / decision `0x1800015E0`).
+LEDs off, all three colours of a half share one offset. For each sensor
+half independently, run a successive-approximation search:
 
 ```
-T = s · (w − base_c − D)          clipped to 1…65535; dummy pixels → 0xFFFF
-          s       D       base_c (= 1E 42 words 0–2)
-300 dpi   1.008   ≈288    ≈0   (Epson sends small values: 3; 8,19,1)
-600 dpi   2.044   ≈328    ≈ min_x(w_c) − 100…200, per colour (32841, 33269, 32524)
-1200 dpi  2.019   ≈330    same rule                  (33331, 33482, 32279)
+offset = 0x80, bit = 0x40
+loop:  program 1E 31, scan 4 dark lines (16-bit, one plane)
+       m = min over x of the 8-pixel box average (within the half, raw stride 2)
+           of the 4-line mean
+       if 0x380 <= m <= 0x480 (896…1152): done
+       if m > 0x480: offset &= ~(bit << 1)        # undo the last bit
+       offset |= bit; bit >>= 1                     # try the next bit
 ```
 
-The fit to Epson's tables has 0.4% rms scatter. At 600/1200 dpi the host
-subtracts a per-colour base and doubles the scale, so the table uses the
-full 16-bit range. **[confirmed by fit]**
+A relaxed window `0x300…0x500` is used when an internal flag is set
+(`obj+0x376`). Every decision in the captures matches, including
+gray @300 where the right half ends at 133 because its measure sat on
+the window edge (1152/1153). **[exact]**
 
-**What the device does with it** (8-bit mode): replacing the table by
-constants C gives `out_C = out_normal · T / C` per pixel (slope 0.997,
-r = 0.999). The output is inversely proportional to the table entry:
-`out ≈ K · (raw − black_half) / (T/s + base)`. The gain K and the role of
-`1E 43` are not separated yet. **[confirmed 1/T, inferred rest]**
+**LED exposure** (`1E 22` `led_duty`, `0x180004426`…). LEDs on, 8-bit
+unshaded reads of 4 lines.
 
-**Validation:** replaying Epson's sequence, but uploading a table computed
-with the formula above from the replay's *own* fresh white pass, gives
-the same image as Epson's table. Brightness is within 0.2–1% per
-colour/half and the mean difference is 2.3 (300 dpi) / 2.8 (600 dpi)
-levels, the same as two runs of Epson's own sequence. **[confirmed on hardware]**
+```
+peak_c   = max over x of the 8-pixel box average (within a half) of the 4-line mean
+targets  = 0x698000 / g, 0x6B8000 / g, 0x6D8000 / g   with g = max(1E 43 word_c, 0x8000)
+         = 211, 215, 219 for g = 0x8000 (the normal case)
+```
+
+A colour whose peak is inside 211…219 is left alone. Otherwise its duty is
+scaled towards 215 (≈ `duty × 215 / peak`; observed updates are within
+1–2% of that). It is repeated 2–3 times. Start duties: 135 @300, 320 @600,
+640 @1200. **[exact constants; update rounding approximate]**
+
+**Shading table, black and base** (`0x180002F50`, `0x180002990`,
+`0x1800049A0`, `0x180002B50`, packing `0x180002840`). Inputs are the
+16-bit dark pass (32 lines) and the 16-bit white pass, both in raw
+(interleaved) pixel order, P planes of W pixels.
+
+```
+A[x]      = floor( sum over lines and planes of dark / (lines·P) )      # one per pixel
+black_h   = min of A over half h (h = x mod 2)                         -> 1E 42 words 3..8 (L,R)×3
+A[x]     -= black_h
+rngA      = max over halves of (max A − min A)       # before subtracting
+sel, shA  = 3,0 if rngA<0x20 | 2,0 if <0x40 | 1,0 if <0x80 | 0,0 if <0x100
+            else 0,k with k = smallest 1..8 such that rngA < 0x100<<k
+white is split into 4 equal groups of lines; G_g[c][x] = floor(mean of group g)
+B[c][x]   = (max_g G_g[c][x] − A[x]) mod 65536       # u16 arithmetic; dummy pixels wrap
+base_c    = min over x of B[c]                         -> 1E 42 words 0..2
+shB       = smallest k ≥ 0 with max_c(max B[c] − base_c) < 2^(8+sel+k)
+T[c][x]   = (((B[c][x] − base_c) >> shB) << (8 − sel)) | (A[x] >> shA)
+1E 41 byte 11 = 0x80 | sel        (bit 7 = shading on)
+1E 41 byte 15 = shB << 4 | shA
+```
+
+Each table entry thus packs the pixel's white gain in the high bits and
+its residual dark offset in the low `8 − sel` bits. During calibration
+passes `1E 42` is all zeros. With gray, P = 1 and base is repeated for
+all three words.
+
+Re-implementing this reproduces Epson's uploaded table **bit for bit** in
+all four captures (2592, 7776, 15504 and 31008 entries). It also
+reproduces all nine `1E 42` words and `1E 41` byte 15 (`0x81` @300,
+`0x72` @600/1200). **[exact]** The device's own arithmetic is then
+presumably `out = (raw − black_h − A·2^shA) · K / (B·2^shB + base_c)`.
+Patching constant tables confirmed that the output is proportional to
+1/T. K and the role of `1E 43` beyond the LED targets are not
+separated yet.
+
+**Hardware check:** `v39replay.py --shading-exact` replays Epson's
+sequence, recomputes table, `1E 42` and `1E 41` bytes 11/15 from the
+replay's own fresh dark/white passes, and scans. The result matches
+the replay with Epson's captured values within 0.1–0.3% brightness per
+colour/half. The mean pixel difference is 2.2–2.3 levels, which is the
+replay-to-replay noise. **[confirmed on hardware]**
+
+**Unit independence.** None of the above uses per-unit constants. All
+inputs are measured on every scan (dark, white, AFE and LED readings),
+and the constants (windows 896…1152 and 211…219, 4 white groups, 8-pixel
+boxes) are fixed in Epson's model-wide interpreter.
 
 ## 8. Things that are still open
 
-* Exact meaning of the `1E 22` fields, `1E 41` bytes 9–17 (shading/LED
-  gating bits), `1E 01` units, `1E 08`, `1E 87`, `1E 5A`, `1E A2`, `1E 43`,
-  and the transfer trailer.
-* The device gain K, and how `1E 43` enters the output formula.
-* The exact rule of the AFE per-half fine adjustment.
+* Exact meaning of the `1E 22` timing fields, `1E 41` bytes 9, 10, 12,
+  16, 17 (LED gating / plane layout), `1E 01` units, `1E 08`, `1E 87`,
+  `1E 5A`, `1E A2`, and the transfer trailer.
+* The device gain K, and whether `1E 43` does more than scale the LED
+  targets.
+* The exact rounding of the LED duty update.
 * Dummy pixels at 1200 dpi.
 * In 16-bit output mode a final-geometry scan starts ≈1.2" further down
   the page than the same scan in 8-bit mode. Not understood.
@@ -552,6 +583,7 @@ Build `esitrace` with LLVM: `clang -O1 -o esitrace.exe tools/esitrace.c`.
   AFE, LED, scan setup and image reads.
 * `tools/v39replay.py`: replays a captured session through `v39.py`. It
   can patch individual parameter bytes (`--patch I:K=V`), replace the
-  shading table with a constant or with one computed by the §7.4 formula
-  from the fresh white pass (`--shading-formula s,D[,base/base/base]`),
-  and dump every image read. Run it with `uv run --with numpy`.
+  shading table with a constant (`--patch-shading C`), recompute the
+  table, `1E 42` and `1E 41` bytes 11/15 with the exact §7.4 algorithm
+  from the replay's own reference passes (`--shading-exact`), and dump
+  every image read. Run it with `uv run --with numpy`.
