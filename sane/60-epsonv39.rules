@@ -1,0 +1,2 @@
+# EPSON Perfection V39: let the logged-in user and the scanner group access it
+ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013d", ENV{libsane_matched}="yes", MODE="0664", GROUP="scanner", TAG+="uaccess"

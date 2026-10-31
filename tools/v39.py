@@ -98,6 +98,10 @@ class PyusbTransport:
             out += chunk
         return out
 
+    def read_transfer(self, maxsize=1 << 20):
+        """One bulk IN transfer (ends at the device's short packet)."""
+        return bytes(self.dev.read(0x81, maxsize, self.timeout))
+
     def close(self):
         import usb.util
         usb.util.dispose_resources(self.dev)
@@ -260,7 +264,7 @@ class V39:
         self._w(fw[0x4C:0x50])
         self._w(image[:65520])
         self._w(image[65520:])
-        self._w(bytes([~sum(image) & 0xFF]))
+        self._w(bytes([sum(image) & 0xFF]))
         self._ack()
         self.action(b"\x1b\x16")
         self._w(b"\x80")

@@ -107,7 +107,7 @@ after power-on: **[confirmed]**
 > 1B 06            < 06                 enter download
 > 01 00 01 00                           4 bytes = esfw010c.bin[0x4C..0x4F]
 > <65536 bytes>                         esfw010c.bin[0x100..0x100FF] (sent as 65520 + 16)
-> A0                                    checksum = ~(sum of the 65536 bytes) & 0xFF
+> A0                                    checksum = (sum of the 65536 bytes) & 0xFF
                    < 06
 > 1B 16            < 06
 > 80               < 06                 (probably "start firmware")
@@ -578,15 +578,40 @@ bookkeeping only. A driver can send the same layout. **[inferred]**
 * Dummy pixels at 4800 dpi, and 4800 dpi gray (not captured).
 * In 16-bit output mode a final-geometry scan starts ≈1.2" further down
   the page than the same scan in 8-bit mode. Not understood.
-* Firmware upload (§4.2) and the pyusb transport have not been run by
-  our own code yet. On Windows, Epson's service uploads the firmware at
-  plug-in. This is the first thing to test on Linux.
-* A complete scan driven only by our own logic, with no replayed
-  sequence, has not been done yet. All pieces are documented. The
-  replays with `--shading-exact` cover everything except the per-mode
-  sequencing.
 * Button bit mapping (`1E 85`); there are 4 buttons: Start/Copy/Send/PDF.
 * Behaviour on errors / cover open / carriage stuck.
+
+### 8.1 Confirmed on Linux with our own code (2026-10-31)
+
+* Firmware upload (§4.2) works from Linux via libusb and takes about
+  10 ms. The checksum byte is the plain sum of the image bytes.
+* **Firmware boot.** After the final ACK of the upload, the device does
+  not answer `1B 03` for about 3.9 s. It then reports `1A` and `5A`
+  while it moves the carriage twice, and reaches `18` after about 10 s.
+  Bit `0x02` seems to mean "initialising". A set or get command sent
+  before `18` may never be ACKed. Abandoning it leaves the framing out of
+  sync, and the device then NAKs all OUT traffic until it is replugged.
+  Wait for `18` before sending anything other than `1B 03` and `1B 13`.
+* A complete scan driven only by `sane/epsonv39.c` works at every
+  resolution from 75 to 4800 dpi, in colour, gray and line-art.
+  Calibration converges to values close to Epson's (AFE `0x86`; LED
+  duties within a few percent).
+* **The device does not answer commands other than `1B 03` while busy.**
+  `1E 84` sent right after the white pass got no ACK. `1B 13` sent while
+  the carriage returned after a scan timed out. Poll `1B 03` until bit
+  `0x40` clears after every pass and before any command.
+* **Wait for the positioning move.** Right after `1E 05`, `1B 03` still
+  reads idle for about 30 ms before the move starts. At 1200 dpi and
+  above, the move takes about 1.8 s. If the final setup (`1E 21` …
+  `1E A2`) is sent during the move, every command is still ACKed. But
+  the image pass then stalls about one plane-line before the end, or
+  returns no data at all. Poll until bit `0x40` has been seen set and
+  then cleared, or until 300 ms pass with no sign of motion.
+* Cancelling with `1E 18` in the middle of the image pass works. Read
+  and discard IN data until a 1 s timeout; the device is then idle and
+  ready for the next scan.
+* A USB port reset on a wedged device made it fail to re-enumerate
+  (`error -71`). Only a physical replug recovers it.
 
 ## 9. Reference: the closed ESC/I interpreter
 
@@ -659,6 +684,7 @@ the host does that before `INTInit` (§4.2).
 
 Build `esitrace` with LLVM: `clang -O1 -o esitrace.exe tools/esitrace.c`.
 
+* `sane/`: the SANE backend built from this document (see `sane/README.md`).
 * `tools/v39.py`: a prototype driver that speaks the device protocol
   directly, with no Epson code. It uses usbscan.sys via ctypes on
   Windows and pyusb on Linux. It covers firmware upload, status, memory,
