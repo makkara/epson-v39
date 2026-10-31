@@ -1,2 +1,4 @@
-# EPSON Perfection V39: let the logged-in user and the scanner group access it
-ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013d", ENV{libsane_matched}="yes", MODE="0664", GROUP="scanner", TAG+="uaccess"
+# EPSON Perfection V39 / GT-S650 (04b8:013d): give the logged-in desktop
+# user access (uaccess) and mark it as a SANE device so the stock SANE rules
+# keep it powered.  Add GROUP="scanner" here if your distribution uses one.
+ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="013d", ENV{libsane_matched}="yes", MODE="0664", TAG+="uaccess"

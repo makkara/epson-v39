@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Replay the host->device stream of an esitrace capture with v39.py.
 
 Status polls (1B 03) are replayed; where the capture saw the device idle

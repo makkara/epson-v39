@@ -1,7 +1,9 @@
 # EPSON Perfection V39 (GT-S650) — USB protocol
 
 Reverse-engineered notes for writing a free SANE backend for the
-EPSON Perfection V39 / GT-S650 (USB `04b8:013d`).
+EPSON Perfection V39 / GT-S650 (USB `04b8:013d`). The working backend
+built from these notes is in [`sane/`](sane/); see the
+[README](README.md) to install it.
 
 Status: **work in progress.** Everything below was observed on real
 hardware (firmware string `1.42`) by running Epson's own Windows driver

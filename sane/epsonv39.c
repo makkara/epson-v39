@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /*
  * SANE backend for the EPSON Perfection V39 / GT-S650 (USB 04b8:013d).
  *
