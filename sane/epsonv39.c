@@ -144,6 +144,11 @@ enum {
     OPT_TL_Y,
     OPT_BR_X,
     OPT_BR_Y,
+    OPT_SENSORS_GROUP,
+    OPT_BUTTON_SCAN,     /* 1E 85 value 1: Start */
+    OPT_BUTTON_COPY,     /* 2: Copy */
+    OPT_BUTTON_EMAIL,    /* 3: Scan to E-mail */
+    OPT_BUTTON_PDF,      /* 4: PDF */
     NUM_OPTIONS
 };
 
@@ -193,6 +198,10 @@ typedef struct {
     char mode[32];
 
     scanparm_t sp;
+
+    /* last 1E 85 reading, shared by the button options */
+    uint8_t btn;
+    double btn_time;
 
     /* calibration results */
     uint16_t duty[3];
@@ -1753,6 +1762,28 @@ static void init_options(v39_t *s)
     o[OPT_BR_Y].name = SANE_NAME_SCAN_BR_Y;
     o[OPT_BR_Y].title = SANE_TITLE_SCAN_BR_Y;
     o[OPT_BR_Y].desc = SANE_DESC_SCAN_BR_Y;
+    o[OPT_SENSORS_GROUP].name = SANE_NAME_SENSORS;
+    o[OPT_SENSORS_GROUP].title = SANE_TITLE_SENSORS;
+    o[OPT_SENSORS_GROUP].type = SANE_TYPE_GROUP;
+    o[OPT_SENSORS_GROUP].cap = SANE_CAP_ADVANCED;
+    o[OPT_SENSORS_GROUP].size = 0;
+    {
+        static const struct { int opt; const char *name, *title, *desc; } btn[] = {
+            { OPT_BUTTON_SCAN, SANE_NAME_SCAN, SANE_TITLE_SCAN, SANE_DESC_SCAN },
+            { OPT_BUTTON_COPY, SANE_NAME_COPY, SANE_TITLE_COPY, SANE_DESC_COPY },
+            { OPT_BUTTON_EMAIL, SANE_NAME_EMAIL, SANE_TITLE_EMAIL, SANE_DESC_EMAIL },
+            { OPT_BUTTON_PDF, SANE_NAME_PDF, SANE_TITLE_PDF, SANE_DESC_PDF },
+        };
+        for (i = 0; i < 4; i++) {
+            o[btn[i].opt].name = btn[i].name;
+            o[btn[i].opt].title = btn[i].title;
+            o[btn[i].opt].desc = btn[i].desc;
+            o[btn[i].opt].type = SANE_TYPE_BOOL;
+            o[btn[i].opt].cap = SANE_CAP_SOFT_DETECT | SANE_CAP_HARD_SELECT | SANE_CAP_ADVANCED;
+            s->val[btn[i].opt] = SANE_FALSE;
+        }
+    }
+
     s->val[OPT_TL_X] = 0;
     s->val[OPT_TL_Y] = 0;
     s->val[OPT_BR_X] = SANE_FIX(MAX_X_MM);
@@ -1859,6 +1890,30 @@ SANE_Status ENTRY(control_option)(SANE_Handle h, SANE_Int n, SANE_Action action,
         return SANE_STATUS_INVAL;
 
     if (action == SANE_ACTION_GET_VALUE) {
+        if (n >= OPT_BUTTON_SCAN && n <= OPT_BUTTON_PDF) {
+            /*
+             * 1E 85 returns the number of the button held down right now
+             * (1 Start, 2 Copy, 3 E-mail, 4 PDF, 0 none); it does not latch,
+             * so pollers should read several times a second.  No USB
+             * traffic is allowed while the image is streaming.
+             */
+            uint8_t b = 0;
+            if (!s->scanning) {
+                /* one query serves all four options for 50 ms */
+                double t = now_s();
+                if (t - s->btn_time > 0.05) {
+                    SANE_Status st = cmd_query(s, 0x1E, 0x85, &s->btn, 1);
+                    if (st != SANE_STATUS_GOOD)
+                        return st;
+                    s->btn_time = t;
+                    if (s->btn)
+                        DBG(4, "button %u\n", s->btn);
+                }
+                b = s->btn;
+            }
+            *(SANE_Word *)val = b == n - OPT_BUTTON_SCAN + 1 ? SANE_TRUE : SANE_FALSE;
+            return SANE_STATUS_GOOD;
+        }
         if (n == OPT_MODE)
             strcpy(val, s->mode);
         else

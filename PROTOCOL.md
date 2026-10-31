@@ -142,7 +142,7 @@ The backend should load it from a user-supplied path, the same way
 | `1B 40` | A | | reset / initialise. **[confirmed]** |
 | `1E 65` | Q | → 1 byte (`00`) | **[unknown]**, used by ESC/I `ESC f` / `FS F` (maybe option/ADF status) |
 | `1E 9F` | Q | → 1 byte (`00`) | **[unknown]**, used by ESC/I `FS I` |
-| `1E 85` | Q | → 1 byte | **button status**; `00` = none pressed. The WIA service polls it once a second. Bit assignment not mapped yet. **[confirmed]** |
+| `1E 85` | Q | → 1 byte | **button status**: the number of the button held down now, not a bit mask. `00` none, `01` Start, `02` Copy, `03` Scan to E-mail, `04` PDF. It does not latch; a short press reads non-zero for about 0.4–0.9 s, so poll several times a second. **[confirmed on hardware]** |
 | `1E 18` | C | | cancel the running scan (ESC/I `CAN`). **[confirmed from code]** |
 
 ### 5.2 Memory access
@@ -583,7 +583,6 @@ bookkeeping only. A driver can send the same layout. **[inferred]**
 * Dummy pixels at 4800 dpi, and 4800 dpi gray (not captured).
 * In 16-bit output mode a final-geometry scan starts ≈1.2" further down
   the page than the same scan in 8-bit mode. Not understood.
-* Button bit mapping (`1E 85`); there are 4 buttons: Start/Copy/Send/PDF.
 * Behaviour on errors / cover open / carriage stuck.
 
 ### 8.1 Confirmed on Linux with our own code (2026-10-31)

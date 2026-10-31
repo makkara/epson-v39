@@ -66,7 +66,7 @@ results, 4 shows every image transfer and 5 shows every USB write and read.
 ## Options
 
 `--mode Color|Gray|Lineart`, `--resolution 75|100|150|200|300|600|1200|2400|4800`,
-`--preview`, `--threshold` (lineart), `--calibration-cache yes|no`, and the standard `-l -t -x -y` area in
+`--preview`, `--threshold` (lineart), `--calibration-cache yes|no`, the read-only button sensors `--scan --copy --email --pdf`, and the standard `-l -t -x -y` area in
 mm (8.5" × 11.7" maximum).
 
 ## Notes
@@ -82,4 +82,8 @@ mm (8.5" × 11.7" maximum).
   dark and white shading passes still run every time. The cache is lost
   when the scanner loses power. `--calibration-cache=no` forces a full
   calibration.
-* The buttons (`1E 85`) are not exposed yet.
+* The four buttons are SANE sensor options: `scan` (Start), `copy`,
+  `email` (Scan to E-mail) and `pdf`. They are true while the button is
+  held down; the scanner doesn't remember a press. Pollers such as
+  scanbd must therefore check several times a second. While an image is
+  streaming, the buttons read as not pressed.
