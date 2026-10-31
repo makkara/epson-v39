@@ -166,8 +166,8 @@ Regions seen:
 |---|---|---|---|
 | `03` | `0x021FFC00` / `0x021FFD00` / `0x021FFE00` | 256 each | 8-bit output LUT (gamma) for R / G / B. ESC/I init writes identity tables. **[confirmed]** |
 | `06` | `0x02012000` | W×P×2 | per-pixel shading table, u16, P planes of W entries in raw (interleaved) pixel order, written after the white-reference scan. The device divides by it (§7.4). **[confirmed]** |
-| `09` | `0x021FFF00` | 12 | calibration cache: AFE offsets as 3 × u32, e.g. `80 00 00 00 76 00 00 00 46 00 00 00`. **[inferred]** |
-| `09` | `0x021FFF10` | 16 | calibration cache key: u32 last resolution, u32 pixel count, then mode bytes (`58 02 00 00 84 03 00 00 11 00 06 00 01 00 13 01`). The interpreter reads it back and skips the slow AFE search when it still matches. **[inferred]** |
+| `09` | `0x021FFF00` | 12 | calibration cache data: the three LED duties (R, G, B) as u32, divided by a per-resolution factor f = 2.5, 2.5, 5, 10, 20 at 300…4800 dpi and rounded. Duties 317/292/170 @300 are stored as `7F 75 44`; 1205/1195/690 @1200 as `F1 EF 8A`. On a hit the interpreter restores duty = floor(value × f). **[confirmed in all captures]** |
+| `09` | `0x021FFF10` | 16 | calibration cache key: u32 x and u32 width of the last request (pixels at its resolution), then 8 mode bytes. Byte 8 = 4800/dpi + 1, plus 20 for gray (`11` 300 colour, `25` 300 gray, `05` 1200 colour, `19` 1200 gray). Byte 14 = `13` colour / `00` gray; bytes 10, 12, 15 are not understood. y is not part of the key. **[inferred]** |
 | `0B` | `0x00000000` | 10 | read at init, all zero. **[unknown]** (NVRAM?) |
 
 `1E E4` with param `0B 00 04 00` returns `14 17 43 01`. It looks like a
@@ -278,14 +278,19 @@ Status polls (`1B 03`) between commands are omitted.
 
 1. **Record the parameters:** `1E 53` (read), `1E 57` (write the 42-byte record).
 2. **Prepare:** `1E A2 01`, `1E 87 00`, `1B 25 0x0037F844`, `1E 83` of the
-   calibration cache key `0x021FFF10`.
-3. **AFE calibration**, done only if the cache key differs:
+   calibration cache key `0x021FFF10` (§5.2).
+3. **AFE and LED calibration.** On a cache miss:
    * `1E A2 00`, `1E 5A 00`, `1E 11 04` (lamp)
    * `1E 21`, `1E 22` (mode 1, LED duty 0), `1E 42` zero, `1E 43` unity
    * repeat (8×): `1E 31` offsets → `1E 41` (4 lines, LED off) → `1E 47` read dark lines; binary-search the offsets
    * LED exposure search: `1E 22` with updated `led_duty`, `1E 41` LED on, `1E 47` (4 lines)
-   * store the results with `1E 84` type `09` to `0x021FFF00` / `0x021FFF10`
-   * Otherwise (cache hit) it just reads `0x021FFF00` back and programs `1E 31`.
+   * the AFE search again
+   * store the key and the scaled duties with `1E 84` type `09`
+
+   On a cache hit (key equal to the current request), the AFE offsets
+   are read back from the AFE with `1E 92`, and the duties come from
+   `0x021FFF00`. A single 8-line dark read and a single 4-line LED read
+   follow; both searches are skipped. **[confirmed in 300-color-y1/y2/y3/y6/h]**
 4. **Dark + white reference:** a 32-line 16-bit dark pass (LED off), then
    `1E 42` with the black levels, `1E 01 mode=Mcal steps=48` (the
    calibration motor mode from §7.5; 48/1200" over the white calibration
@@ -582,6 +587,17 @@ bookkeeping only. A driver can send the same layout. **[inferred]**
 * Behaviour on errors / cover open / carriage stuck.
 
 ### 8.1 Confirmed on Linux with our own code (2026-10-31)
+
+* **Calibration cache.** `sane/epsonv39.c` keeps its own entry in the
+  two type-`09` regions, tagged `V39S` and checksummed, so neither driver
+  can mistake the other's entry for a hit. The key is the hardware
+  resolution plus colour/gray. On a hit, one dark read checks the
+  cached AFE offsets against the 896…1152 window. The LED search then
+  starts from the cached duties and normally stops after its first read.
+  Calibration time drops from 2.7 s to 1.7 s at 300 dpi and from 3.7 s to
+  2.3 s at 1200 dpi. Output brightness matches a full calibration
+  within 0.3 levels. The cache survives across processes and is lost
+  on power-off, together with the firmware.
 
 * Firmware upload (§4.2) works from Linux via libusb and takes about
   10 ms. The checksum byte is the plain sum of the image bytes.

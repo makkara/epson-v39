@@ -138,6 +138,7 @@ enum {
     OPT_RESOLUTION,
     OPT_PREVIEW,
     OPT_THRESHOLD,
+    OPT_CAL_CACHE,
     OPT_GEOMETRY_GROUP,
     OPT_TL_X,
     OPT_TL_Y,
@@ -710,28 +711,29 @@ static void box8(const int64_t *m, int W, int want_max, int64_t res[2])
     }
 }
 
-static SANE_Status afe_search(v39_t *s, const hwres_t *hw, int b10)
+#define AFE_LO 0x380
+#define AFE_HI 0x480
+
+/* program offsets, read 4 dark lines, return the per-half measure (7.4) */
+static SANE_Status afe_measure(v39_t *s, const hwres_t *hw, int b10,
+                               const uint16_t off[2], int64_t meas[2])
 {
     const int lines = 4, lb = hw->W * 2;
     uint8_t blk[10] = { 0x00, hw->b9, b10, 0x00, 0x00, 0x01, 0x00, 0x00, 0x80, 0x00 };
     uint8_t *buf = malloc((size_t)lines * lb);
     int64_t *m = malloc(sizeof(int64_t) * hw->W);
-    uint16_t off[2] = { 0x80, 0x80 }, bit[2] = { 0x40, 0x40 };
-    int done[2] = { 0, 0 }, iter, x, l, h;
-    SANE_Status st = SANE_STATUS_GOOD;
+    int x, l;
+    SANE_Status st;
 
     if (!buf || !m) {
         free(buf);
         free(m);
         return SANE_STATUS_NO_MEM;
     }
-    for (iter = 0; iter < 10 && !(done[0] && done[1]); iter++) {
-        int64_t meas[2];
-        st = set_afe(s, off[0], off[1]);
-        if (st == SANE_STATUS_GOOD)
-            st = read_pass(s, hw, lines, blk, lb, buf);
-        if (st != SANE_STATUS_GOOD)
-            break;
+    st = set_afe(s, off[0], off[1]);
+    if (st == SANE_STATUS_GOOD)
+        st = read_pass(s, hw, lines, blk, lb, buf);
+    if (st == SANE_STATUS_GOOD) {
         for (x = 0; x < hw->W; x++) {
             int64_t a = 0;
             for (l = 0; l < lines; l++)
@@ -741,31 +743,53 @@ static SANE_Status afe_search(v39_t *s, const hwres_t *hw, int b10)
         box8(m, hw->W, 0, meas);
         DBG(3, "AFE offsets %02x/%02x -> %lld/%lld\n", off[0], off[1],
             (long long)meas[0], (long long)meas[1]);
+    }
+    free(buf);
+    free(m);
+    return st;
+}
+
+/* successive-approximation search per sensor half, starting at 0x80 */
+static SANE_Status afe_search(v39_t *s, const hwres_t *hw, int b10)
+{
+    uint16_t off[2] = { 0x80, 0x80 }, bit[2] = { 0x40, 0x40 };
+    int done[2] = { 0, 0 }, iter, h;
+    SANE_Status st = SANE_STATUS_GOOD;
+
+    for (iter = 0; iter < 10 && !(done[0] && done[1]); iter++) {
+        int64_t meas[2];
+        st = afe_measure(s, hw, b10, off, meas);
+        if (st != SANE_STATUS_GOOD)
+            return st;
         for (h = 0; h < 2; h++) {
             if (done[h])
                 continue;
-            if ((meas[h] >= 0x380 && meas[h] <= 0x480) || bit[h] == 0) {
+            if ((meas[h] >= AFE_LO && meas[h] <= AFE_HI) || bit[h] == 0) {
                 done[h] = 1;
                 continue;
             }
-            if (meas[h] > 0x480)
+            if (meas[h] > AFE_HI)
                 off[h] &= ~(bit[h] << 1);
             off[h] |= bit[h];
             bit[h] >>= 1;
         }
     }
-    free(buf);
-    free(m);
-    if (st == SANE_STATUS_GOOD) {
-        s->afe[0] = off[0];
-        s->afe[1] = off[1];
-        DBG(2, "AFE offsets: L=%02x R=%02x\n", off[0], off[1]);
-        st = set_afe(s, off[0], off[1]);
-    }
-    return st;
+    s->afe[0] = off[0];
+    s->afe[1] = off[1];
+    DBG(2, "AFE offsets: L=%02x R=%02x\n", off[0], off[1]);
+    return set_afe(s, off[0], off[1]);
 }
 
-static SANE_Status led_search(v39_t *s, const hwres_t *hw, int b10)
+/* one read at the current offsets; *ok = both halves inside the window */
+static SANE_Status afe_verify(v39_t *s, const hwres_t *hw, int b10, int *ok)
+{
+    int64_t meas[2];
+    CHK(afe_measure(s, hw, b10, s->afe, meas));
+    *ok = meas[0] >= AFE_LO && meas[0] <= AFE_HI && meas[1] >= AFE_LO && meas[1] <= AFE_HI;
+    return SANE_STATUS_GOOD;
+}
+
+static SANE_Status led_search(v39_t *s, const hwres_t *hw, int b10, int *reads)
 {
     const int lines = 4, lb = hw->W * 3;
     uint8_t blk[10] = { 0x01, hw->b9, b10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00 };
@@ -815,7 +839,9 @@ static SANE_Status led_search(v39_t *s, const hwres_t *hw, int b10)
     }
     free(buf);
     free(m);
-    DBG(2, "LED duties: %u %u %u\n", s->duty[0], s->duty[1], s->duty[2]);
+    if (reads)
+        *reads = iter + 1;
+    DBG(2, "LED duties: %u %u %u (%d reads)\n", s->duty[0], s->duty[1], s->duty[2], iter + 1);
     return st;
 }
 
@@ -1192,6 +1218,99 @@ out:
 }
 
 /* ------------------------------------------------------------------ */
+/* calibration cache in device RAM                                     */
+
+/*
+ * Epson's interpreter keeps a calibration cache in device RAM (type 09):
+ * 12 bytes of data at 0x021FFF00 and a 16-byte key at 0x021FFF10.  RAM is
+ * lost on power-off, so the cache dies with the firmware.  We use the same
+ * two regions with our own tagged format, so neither driver can mistake the
+ * other's entry for a hit (PROTOCOL.md 5.2):
+ *
+ *   data: u16 duty[3], u16 afe[2], u16 0
+ *   key : "V39S", u16 version, u16 hw dpi, u8 colour, u8 0, u16 0,
+ *         u32 FNV-1a over data and key bytes 0..11
+ */
+#define CACHE_DATA 0x021FFF00
+#define CACHE_KEY  0x021FFF10
+#define CACHE_VERSION 1
+
+static uint32_t fnv1a(const uint8_t *a, size_t n, const uint8_t *b, size_t m)
+{
+    uint32_t h = 2166136261u;
+    size_t i;
+    for (i = 0; i < n; i++)
+        h = (h ^ a[i]) * 16777619u;
+    for (i = 0; i < m; i++)
+        h = (h ^ b[i]) * 16777619u;
+    return h;
+}
+
+static void cache_build(const v39_t *s, const hwres_t *hw, int colour, uint8_t data[12], uint8_t key[16])
+{
+    int i;
+    memset(data, 0, 12);
+    memset(key, 0, 16);
+    for (i = 0; i < 3; i++)
+        put16(data + 2 * i, s->duty[i]);
+    put16(data + 6, s->afe[0]);
+    put16(data + 8, s->afe[1]);
+    memcpy(key, "V39S", 4);
+    put16(key + 4, CACHE_VERSION);
+    put16(key + 6, hw->dpi);
+    key[8] = colour ? 1 : 0;
+    put32(key + 12, fnv1a(data, 12, key, 12));
+}
+
+/* returns 1 and fills s->duty / s->afe on a valid entry for this mode */
+static int cache_load(v39_t *s, const hwres_t *hw, int colour)
+{
+    uint8_t data[12], key[16], want_data[12], want_key[16];
+    int i;
+    if (mem_read(s, 0x09, CACHE_KEY, key, 16) != SANE_STATUS_GOOD ||
+        mem_read(s, 0x09, CACHE_DATA, data, 12) != SANE_STATUS_GOOD)
+        return 0;
+    if (memcmp(key, "V39S", 4) != 0) {
+        DBG(2, "calibration cache: no entry of ours\n");
+        return 0;
+    }
+    if (rd16(key + 4) != CACHE_VERSION || rd16(key + 6) != hw->dpi || key[8] != (colour ? 1 : 0)) {
+        DBG(2, "calibration cache: entry for %u dpi %s, need %d dpi %s\n", rd16(key + 6),
+            key[8] ? "colour" : "gray", hw->dpi, colour ? "colour" : "gray");
+        return 0;
+    }
+    if ((uint32_t)(key[12] | key[13] << 8 | key[14] << 16 | (uint32_t)key[15] << 24) !=
+        fnv1a(data, 12, key, 12)) {
+        DBG(1, "calibration cache: checksum mismatch\n");
+        return 0;
+    }
+    for (i = 0; i < 3; i++) {
+        s->duty[i] = rd16(data + 2 * i);
+        if (s->duty[i] == 0 || s->duty[i] > hw->c)
+            return 0;
+    }
+    s->afe[0] = rd16(data + 6);
+    s->afe[1] = rd16(data + 8);
+    if (s->afe[0] > 0xFF || s->afe[1] > 0xFF)
+        return 0;
+    cache_build(s, hw, colour, want_data, want_key);   /* sanity: round trip */
+    if (memcmp(want_data, data, 12) != 0)
+        return 0;
+    DBG(2, "calibration cache: hit (AFE %02x/%02x, duties %u %u %u)\n",
+        s->afe[0], s->afe[1], s->duty[0], s->duty[1], s->duty[2]);
+    return 1;
+}
+
+static SANE_Status cache_store(v39_t *s, const hwres_t *hw, int colour)
+{
+    uint8_t data[12], key[16];
+    cache_build(s, hw, colour, data, key);
+    /* data first, key last: a half-written entry never validates */
+    CHK(mem_write(s, 0x09, CACHE_DATA, data, 12));
+    return mem_write(s, 0x09, CACHE_KEY, key, 16);
+}
+
+/* ------------------------------------------------------------------ */
 /* scan sequence (PROTOCOL.md 7.1)                                     */
 
 static SANE_Status do_calibrate_and_start(v39_t *s)
@@ -1239,35 +1358,63 @@ static SANE_Status do_calibrate_and_start(v39_t *s)
         CHK(cmd_setget(s, 0x1B, 0x25, a, 4, r4, 4));
     }
 
-    /* 3. AFE offsets, LED exposure, AFE again (as Epson's interpreter does) */
-    for (i = 0; i < 3; i++)
-        s->duty[i] = hw->duty0;
-    CHK(set_afe(s, 0x80, 0x80));
-    CHK(set_u8(s, 0xA2, 0));
-    CHK(set_u8(s, 0x5A, 0));
-    CHK(set_u8(s, 0x11, hw->lamp));
-    sleep_ms(30);
-    CHK(set_reg21(s, hw->reg21));
-    CHK(set_led(s, hw, colour ? 2 : 1, NULL, 0));
-    CHK(set_words(s, 0x42, zero9, 9));
-    CHK(set_words(s, 0x43, w43_cal, 6));
-    CHK(set_led(s, hw, 1, s->duty, 0));
-    CHK(afe_search(s, hw, b10));
+    /*
+     * 3. AFE offsets and LED exposure.  Full calibration runs AFE, LED,
+     * AFE as Epson's interpreter does.  With a cache entry for this mode,
+     * one dark read checks the cached offsets and the LED search starts
+     * from the cached duties, so it normally stops after its first read.
+     */
+    {
+        int hit = s->val[OPT_CAL_CACHE] && cache_load(s, hw, colour);
+        int afe_ok = 0, reads = 0;
 
-    CHK(set_u8(s, 0xA2, 1));
-    CHK(set_u8(s, 0x5A, 0));
-    CHK(set_reg21(s, hw->reg21));
-    CHK(set_words(s, 0x42, zero9, 9));
-    CHK(set_words(s, 0x43, w43_cal, 6));
-    CHK(led_search(s, hw, b10));
+        if (!hit) {
+            for (i = 0; i < 3; i++)
+                s->duty[i] = hw->duty0;
+            s->afe[0] = s->afe[1] = 0x80;
+        }
+        CHK(set_afe(s, s->afe[0], s->afe[1]));
+        CHK(set_u8(s, 0xA2, 0));
+        CHK(set_u8(s, 0x5A, 0));
+        CHK(set_u8(s, 0x11, hw->lamp));
+        sleep_ms(30);
+        CHK(set_reg21(s, hw->reg21));
+        CHK(set_led(s, hw, colour ? 2 : 1, NULL, 0));
+        CHK(set_words(s, 0x42, zero9, 9));
+        CHK(set_words(s, 0x43, w43_cal, 6));
+        CHK(set_led(s, hw, 1, s->duty, 0));
+        if (hit)
+            CHK(afe_verify(s, hw, b10, &afe_ok));
+        if (!afe_ok) {
+            if (hit)
+                DBG(2, "calibration cache: AFE out of window, searching\n");
+            CHK(afe_search(s, hw, b10));
+        }
 
-    CHK(set_u8(s, 0xA2, 0));
-    CHK(set_u8(s, 0x5A, 0));
-    CHK(set_reg21(s, hw->reg21));
-    CHK(set_words(s, 0x42, zero9, 9));
-    CHK(set_words(s, 0x43, w43_cal, 6));
-    CHK(set_led(s, hw, 1, s->duty, 0));
-    CHK(afe_search(s, hw, b10));
+        CHK(set_u8(s, 0xA2, 1));
+        CHK(set_u8(s, 0x5A, 0));
+        CHK(set_reg21(s, hw->reg21));
+        CHK(set_words(s, 0x42, zero9, 9));
+        CHK(set_words(s, 0x43, w43_cal, 6));
+        CHK(led_search(s, hw, b10, &reads));
+
+        if (!hit || !afe_ok) {
+            /* second AFE pass of the full calibration */
+            CHK(set_u8(s, 0xA2, 0));
+            CHK(set_u8(s, 0x5A, 0));
+            CHK(set_reg21(s, hw->reg21));
+            CHK(set_words(s, 0x42, zero9, 9));
+            CHK(set_words(s, 0x43, w43_cal, 6));
+            CHK(set_led(s, hw, 1, s->duty, 0));
+            CHK(afe_search(s, hw, b10));
+        }
+        if (!hit || !afe_ok || reads > 1) {
+            SANE_Status cs = cache_store(s, hw, colour);
+            if (cs != SANE_STATUS_GOOD)
+                return cs;
+        }
+        DBG(1, "calibration: %s\n", !hit ? "full" : afe_ok && reads == 1 ? "cached" : "cached, refreshed");
+    }
 
     /* 4. dark pass (LEDs off: flag 1) */
     if (colour) {
@@ -1573,6 +1720,16 @@ static void init_options(v39_t *s)
     o[OPT_THRESHOLD].cap |= SANE_CAP_INACTIVE;
     s->val[OPT_THRESHOLD] = 128;
 
+    o[OPT_CAL_CACHE].name = "calibration-cache";
+    o[OPT_CAL_CACHE].title = SANE_I18N("Calibration cache");
+    o[OPT_CAL_CACHE].desc = SANE_I18N("Reuse the AFE offsets and LED exposure measured by an earlier "
+                                      "scan in the same mode, kept in scanner RAM until power-off. "
+                                      "A quick check read still runs; turn this off to force a full "
+                                      "calibration.");
+    o[OPT_CAL_CACHE].type = SANE_TYPE_BOOL;
+    o[OPT_CAL_CACHE].cap |= SANE_CAP_ADVANCED;
+    s->val[OPT_CAL_CACHE] = SANE_TRUE;
+
     o[OPT_GEOMETRY_GROUP].title = SANE_I18N("Geometry");
     o[OPT_GEOMETRY_GROUP].type = SANE_TYPE_GROUP;
     o[OPT_GEOMETRY_GROUP].cap = 0;
@@ -1748,6 +1905,9 @@ SANE_Status ENTRY(control_option)(SANE_Handle h, SANE_Int n, SANE_Action action,
         s->val[n] = v;
         break;
     }
+    case OPT_CAL_CACHE:
+        s->val[n] = *(SANE_Word *)val ? SANE_TRUE : SANE_FALSE;
+        break;
     case OPT_PREVIEW:
         s->val[n] = *(SANE_Word *)val ? SANE_TRUE : SANE_FALSE;
         if (info)

@@ -66,7 +66,7 @@ results, 4 shows every image transfer and 5 shows every USB write and read.
 ## Options
 
 `--mode Color|Gray|Lineart`, `--resolution 75|100|150|200|300|600|1200|2400|4800`,
-`--preview`, `--threshold` (lineart), and the standard `-l -t -x -y` area in
+`--preview`, `--threshold` (lineart), `--calibration-cache yes|no`, and the standard `-l -t -x -y` area in
 mm (8.5" × 11.7" maximum).
 
 ## Notes
@@ -76,6 +76,10 @@ mm (8.5" × 11.7" maximum).
 * Never USB-reset a wedged scanner. That knocked it off the bus in
   testing, and it needed a physical replug. If it stops answering,
   unplug it.
-* Every scan runs the full calibration (≈2.5 s). Epson's calibration
-  cache in device RAM is not used.
+* The AFE offsets and LED exposure are cached in scanner RAM per hardware
+  resolution and colour/gray. A repeat scan in the same mode skips both
+  searches after one check read each, which saves 1–1.5 s per scan. The
+  dark and white shading passes still run every time. The cache is lost
+  when the scanner loses power. `--calibration-cache=no` forces a full
+  calibration.
 * The buttons (`1E 85`) are not exposed yet.
