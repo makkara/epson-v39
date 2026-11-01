@@ -29,7 +29,9 @@ architecture:
 ```
 
 * The scanner has **no firmware in flash**. After every power-on the host
-  uploads a 64 KiB ARM image (`esfw010c.bin`), see §4. **[confirmed]**
+  uploads a 64 KiB firmware image (`esfw010c.bin`), see §4. **[confirmed]**
+  The image is code for Epson's own S1C33 CPU, not ARM (§4.2).
+  **[inferred from instruction statistics]**
 * The firmware speaks a small, low-level command set (§5). It does not
   speak ESC/I.
 * The host does ESC/I emulation, calibration, cropping and down-sampling.
@@ -123,7 +125,7 @@ loss.
 | offset | size | content |
 |---|---|---|
 | `0x000` | 256 | header, magic `EDLA`; at `0x40`: `00 01 00 00 01 00 00 01 00 00 B8 04 01 00 01 00` (contains VID `04B8`; the last 4 bytes are the download header) |
-| `0x100` | 65536 | ARM Cortex-M image (vector table: SP `0x02000400`, reset `0x02000560`) |
+| `0x100` | 65536 | firmware for an Epson S1C33 core (32-bit RISC, 16-bit little-endian instructions; not ARM: no ARM/Thumb prologues, about 26 % `ext` prefixes, 345 `ret` = `0x0640`). Starts with a table of 32-bit addresses in `0x0200xxxx` (`0x02000400`, then `0x02000560` repeated); code from file offset about `0x3000`, data from about `0xB000`, `FF` padding from `0xD000`. CPU inferred from instruction statistics, not from a disassembly |
 | `0x10100` | 1 | file checksum (`BF`); not sent |
 
 The firmware is copyrighted by Epson and cannot be distributed with SANE.
