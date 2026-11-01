@@ -13,6 +13,8 @@ carries a confidence tag:
 * **[confirmed]** — seen consistently on the wire and/or read from the code.
 * **[inferred]** — consistent with the traces, but the meaning is a guess.
 * **[unknown]** — the bytes are recorded, but the meaning is not yet understood.
+* **[firmware]** — read from a disassembly of the device firmware (§10), not
+  yet checked on the wire or on hardware.
 
 ---
 
@@ -30,8 +32,8 @@ architecture:
 
 * The scanner has **no firmware in flash**. After every power-on the host
   uploads a 64 KiB firmware image (`esfw010c.bin`), see §4. **[confirmed]**
-  The image is code for Epson's own S1C33 CPU, not ARM (§4.2).
-  **[inferred from instruction statistics]**
+  The image is code for Epson's own S1C33 CPU (C33 PE core), not ARM; see
+  §10 for what the firmware does. **[firmware]**
 * The firmware speaks a small, low-level command set (§5). It does not
   speak ESC/I.
 * The host does ESC/I emulation, calibration, cropping and down-sampling.
@@ -101,6 +103,18 @@ The interpreter sends this before almost every command.
 Bit `0x10` means firmware loaded. The interpreter refuses to run without
 it. Bit `0x40` means busy/moving. Bit `0x08` is always set. **[inferred]**
 
+The firmware builds the reply as `(state & 0xDE) | 0x10, 00`. The bits
+are: **[firmware]**
+
+| bit | meaning |
+|---|---|
+| `0x02` | initialising: the power-on self-calibration and homing are running (§10.4) |
+| `0x04` | carriage/home-sensor problem during the power-on homing |
+| `0x08` | the USB link runs at high speed (512-byte packets); hence "always set" |
+| `0x10` | firmware running |
+| `0x40` | busy: a scan or carriage move is in progress |
+| `0x80` | fatal error; the device stops and logs an error code (§10.6) |
+
 ### 4.2 Firmware download
 
 Traced from Epson's WIA driver (`CWIADriver::DownLoadFirmware`) right
@@ -125,7 +139,7 @@ loss.
 | offset | size | content |
 |---|---|---|
 | `0x000` | 256 | header, magic `EDLA`; at `0x40`: `00 01 00 00 01 00 00 01 00 00 B8 04 01 00 01 00` (contains VID `04B8`; the last 4 bytes are the download header) |
-| `0x100` | 65536 | firmware for an Epson S1C33 core (32-bit RISC, 16-bit little-endian instructions; not ARM: no ARM/Thumb prologues, about 26 % `ext` prefixes, 345 `ret` = `0x0640`). Starts with a table of 32-bit addresses in `0x0200xxxx` (`0x02000400`, then `0x02000560` repeated); code from file offset about `0x3000`, data from about `0xB000`, `FF` padding from `0xD000`. CPU inferred from instruction statistics, not from a disassembly |
+| `0x100` | 65536 | firmware for the Epson S1C33 C33 PE core (32-bit RISC, 16-bit little-endian instructions), loaded at `0x02000000`. Starts with the trap table (reset vector `0x02000400`). Image offset `0x1000`–`0x1FFF` holds the interrupt stubs and RAM-resident code that the reset handler copies to on-chip RAM at `0x0C00`; main code follows, data from about `0xB000`, `FF` padding from `0xD000` (§10) |
 | `0x10100` | 1 | file checksum (`BF`); not sent |
 
 The firmware is copyrighted by Epson and cannot be distributed with SANE.
@@ -142,11 +156,11 @@ The backend should load it from a user-supplied path, the same way
 
 | op | shape | params → reply | notes |
 |---|---|---|---|
-| `1B 13` | Q | → 28 bytes ASCII | `"EPSON   Perfection V39  1.42"`: vendor(8), product(16), firmware version(4). **[confirmed]** |
-| `1B 40` | A | | reset / initialise. **[confirmed]** |
-| `1E 65` | Q | → 1 byte (`00`) | **[unknown]**, used by ESC/I `ESC f` / `FS F` (maybe option/ADF status) |
-| `1E 9F` | Q | → 1 byte (`00`) | **[unknown]**, used by ESC/I `FS I` |
-| `1E 85` | Q | → 1 byte | **button status**: the number of the button held down now, not a bit mask. `00` none, `01` Start, `02` Copy, `03` Scan to E-mail, `04` PDF. It does not latch; a short press reads non-zero for about 0.4–0.9 s, so poll several times a second. **[confirmed on hardware]** |
+| `1B 13` | Q | → 28 bytes ASCII | `"EPSON   Perfection V39  1.42"`: vendor(8), product(16), firmware version(4). **[confirmed]** The firmware's built-in string is `"EPSON   GT-S650         1.42"`; the product name is copied from the SPI flash (§10.5). **[firmware]** |
+| `1B 40` | A | | reset / initialise. **[confirmed]** Resets the firmware state and schedules the start-up calibration again. **[firmware]** |
+| `1E 65` | Q | → 1 byte (`00`) | used by ESC/I `ESC f` / `FS F`. The firmware always replies `00`. **[firmware]** |
+| `1E 9F` | Q | → 1 byte (`00`) | used by ESC/I `FS I`. The firmware always replies `00`. **[firmware]** |
+| `1E 85` | Q | → 1 byte | **button status**: the number of the button held down now, not a bit mask. `00` none, `01` Start, `02` Copy, `03` Scan to E-mail, `04` PDF. A short press reads non-zero for about 0.4–0.9 s, so poll several times a second. **[confirmed on hardware]** The firmware polls the buttons on a timer and keeps the last non-idle state until `1E 85` reads it; the read and the start of a scan (`1E 47`) reset it. If two buttons are down, the lowest number wins. **[firmware]** |
 | `1E 18` | C | | cancel the running scan (ESC/I `CAN`). **[confirmed from code]** |
 
 ### 5.2 Memory access
@@ -172,26 +186,35 @@ Regions seen:
 | `06` | `0x02012000` | W×P×2 | per-pixel shading table, u16, P planes of W entries in raw (interleaved) pixel order, written after the white-reference scan. The device divides by it (§7.4). **[confirmed]** |
 | `09` | `0x021FFF00` | 12 | calibration cache data: the three LED duties (R, G, B) as u32, divided by a per-resolution factor f = 2.5, 2.5, 5, 10, 20 at 300…4800 dpi and rounded. Duties 317/292/170 @300 are stored as `7F 75 44`; 1205/1195/690 @1200 as `F1 EF 8A`. On a hit the interpreter restores duty = floor(value × f). **[confirmed in all captures]** |
 | `09` | `0x021FFF10` | 16 | calibration cache key: u32 x and u32 width of the last request (pixels at its resolution), then 8 mode bytes. Byte 8 = 4800/dpi + 1, plus 20 for gray (`11` 300 colour, `25` 300 gray, `05` 1200 colour, `19` 1200 gray). Byte 14 = `13` colour / `00` gray; bytes 10, 12, 15 are not understood. y is not part of the key. **[inferred]** |
-| `0B` | `0x00000000` | 10 | read at init, all zero. **[unknown]** (NVRAM?) |
+| `0B` | `0x00000000` | 10 | read at init, all zero. Not NVRAM: byte 0 is the AFE/sensor board variant read from a hardware strap (0 on the tested unit), the rest is zero. **[firmware]** |
 
-`1E E4` with param `0B 00 04 00` returns `14 17 43 01`. It looks like a
-read of type `0B`, address 4. **[unknown]**
+Type `06` reads and writes go by DMA in 256 KiB chunks; types `03` and
+`09` go through a buffer. Writes of type `07` are received and dropped,
+types `01` and `04` get no ACK, and unknown types are received and then
+NAKed. Other read types return the memory at the address as is.
+**[firmware]**
+
+`1E E4` with param `0B 00 04 00` returns `14 17 43 01`. This is a read
+of SPI flash field `0x0B` (u16 field, u16 length), i.e. flash address
+`0x22004` (§10.5). **[firmware]**
 
 `1B 25` (shape SG) takes a u32 address and returns a u32, e.g. address
-`0x0037F844` → `0x28`, `0x58`. It looks like a hardware register read. The
-same value appears in status bits. **[inferred]**
+`0x0037F844` → `0x28`, `0x58`. It is a plain memory read. `0x0037F844`
+is the carriage position counter: the firmware subtracts `0x28`, so
+`0x28` means "at home". `1B 20`/`21`/`22` write a u8/u16/u32 and
+`1B 23`/`24` read a u8/u16 the same way. **[firmware]**
 
 ### 5.3 Motion and lamp
 
 | op | shape | param | notes |
 |---|---|---|---|
 | `1E 01` | S | 6 bytes: `u16 mode, u32 steps` | motor command; steps are **1/1200"**. `mode 0x1000` = fast move (positioning to the scan start). Any other mode = motor speed profile for the next pass, with `steps` = the length of that pass. See §7.5 for the mode codes and §7.1 for the formulas. **[confirmed]** |
-| `1E 05` | A | — | return to home. Poll `1B 03` until `58 00` turns into `18 00` (≈1.2 s). **[confirmed]** |
-| `1E 11` | S | 1 byte (`04`) | lamp/LED power on; the host waits ~30 ms afterwards. **[inferred]** |
-| `1E 08` | SG | 1 byte (`09`) → 4 bytes (`E6 00 00 00`) | **[unknown]**, part of the calibration move |
-| `1E 87` | SG | 1 byte (`00`) → 6 bytes (`01 00 F6 FF E9 FF`) | three s16 values (1, −10, −23); maybe per-colour line or position offsets. **[unknown]** |
-| `1E 5A` | S | 1 byte `00`/`01` | **[unknown]**, toggled around calibration |
-| `1E A2` | S | 1 byte `00`/`01` | set to `01` right before the final `1E 47`, `00` otherwise. **[inferred]** (data-transfer / motor enable) |
+| `1E 05` | A | — | return to home. Poll `1B 03` until `58 00` turns into `18 00` (≈1.2 s). **[confirmed]** The firmware ACKs before it starts the motor, which is why status reads idle for a moment first (§8.1). **[firmware]** |
+| `1E 11` | S | 1 byte (`04`) | lamp/LED power on; the host waits ~30 ms afterwards. **[inferred]** The firmware maps the value (0, 1, 2, 4) to a row of a sensor configuration table and reloads the AFE registers and the LED driver current and timing from it. **[firmware]** |
+| `1E 08` | SG | 1 byte (`09`) → 4 bytes (`E6 00 00 00`) | returns a field of motor speed profile n from the firmware's profile table (the same profiles `1E 01` selects). **[firmware]** |
+| `1E 87` | SG | 1 byte (`00`) → 6 bytes (`01 00 F6 FF E9 FF`) | result of the power-on search for a mark on the calibration strip (§10.4): found (1) or not (2), then the x and y offsets of the mark from their nominal position (−10, −23). These are this unit's mechanical alignment offsets. **[firmware]** |
+| `1E 5A` | S | 1 byte `00`/`01` | toggled around calibration. `01` turns on the hardware tone stage: the firmware loads the three gamma LUTs (`1E 84` type `03`) as 16-bit, slightly smoothed tables into the hardware LUT and enables it; `00` disables it. Calibration passes run with `00`. (`02` selects a second built-in curve.) **[firmware]** |
+| `1E A2` | S | 1 byte `00`/`01` | set to `01` right before the final `1E 47`, `00` otherwise. It switches the R/G/B LEDs on or off. `1E A1` (Q, 1 byte) reads the state back. **[firmware]** |
 
 ### 5.4 Analog front end and sensor timing
 
@@ -223,7 +246,9 @@ The AFE offset search and LED exposure search are described in §7.4.
 ### 5.5 Scan setup and data
 
 `1E 57` (S, 42 bytes) / `1E 53` (Q, 42 bytes) store and read a parameter
-record. It shows the device-level geometry the interpreter derived: **[inferred]**
+record. The firmware discards what `1E 57` sends, and `1E 53` always
+returns 42 zero bytes, so the record has no effect. **[firmware]** It
+shows the device-level geometry the interpreter derived: **[inferred]**
 
 ```
 u32 out_res   u32 scan_yres   u32 y_out   u32 y_scan   u32 width_px   u32 lines   u8 mode   u8 depth   …
@@ -247,6 +272,13 @@ u32 out_res   u32 scan_yres   u32 y_out   u32 y_scan   u32 width_px   u32 lines 
 | 14 | `00` | |
 | 15 | shading-table shifts: high nibble = gain shift shB, low nibble = dark shift shA (§7.4). **[exact]** | `81` @300, `72` @600/1200 |
 | 16–17 | `80 A0` image scan, `80 80` white pass, `80 00` dark passes | |
+
+The firmware does not read bytes 9, 14 and 16. Byte 13 bit 0 selects
+one plane instead of three. The first/end pixel go to the sensor
+window, lines × planes to a down-counting line register, byte 11 to the
+shading mode and table split, byte 15 to the shading shifts, and
+byte 17 bit 5 makes the carriage return home after the pass. Byte 10
+feeds the motor set-up for the pass. **[firmware]**
 
 Bytes 9–17 together select shading, LED gating and the plane layout.
 Copying the image-scan values onto a calibration pass turns the LEDs on
@@ -319,7 +351,9 @@ Status polls (`1B 03`) between commands are omitted.
 8. **Start:** `1E 47`, then read every transfer.
 9. The host sends nothing after the last transfer; the carriage appears to
    return home on its own, with status showing `58 00` until it arrives.
-   **[inferred]**
+   **[inferred]** The firmware does this when `1E 41` byte 17 bit 5 is
+   set; it also increments a scan counter in its SPI flash (§10.5).
+   **[firmware]**
 
 From `FS G` to the first image data takes ≈3.6 s on the first scan after
 power-up and ≈2.5 s when the calibration cache hits.
@@ -578,9 +612,10 @@ bookkeeping only. A driver can send the same layout. **[inferred]**
 
 ## 8. Things that are still open
 
-* Exact meaning of the `1E 22` timing fields, `1E 41` bytes 9, 10, 12,
-  16, 17 (LED gating / plane layout), `1E 01` units, `1E 08`, `1E 87`,
-  `1E 5A`, `1E A2`, and the transfer trailer.
+* Exact meaning of the `1E 22` timing fields, `1E 41` bytes 10, 12 and
+  17 (bytes 9, 14 and 16 are ignored by the firmware), and the transfer
+  trailer. `1E 08`, `1E 87`, `1E 5A` and `1E A2` are explained from the
+  firmware (§5.3) but not tested.
 * The device gain K, and whether `1E 43` does more than scale the LED
   targets.
 * The exact rounding of the LED duty update.
@@ -689,6 +724,152 @@ the host does that before `INTInit` (§4.2).
 | 37 | film type | 0 or 1 |
 | 38 | lamp mode | stored |
 | 42–43 | u16 | 5000…15000, otherwise forced to 10000 |
+
+## 10. Firmware internals
+
+Everything in this section was read from a disassembly of
+`esfw010c.bin` (version 1.42) and is **[firmware]** unless stated
+otherwise. It explains device behaviour seen on the wire; none of it is
+needed to drive the scanner. The disassembly was done with a Ghidra
+processor module written for this CPU. The module and the function
+names are not part of this repository, because the firmware is Epson's
+copyrighted code.
+
+### 10.1 CPU and memory map
+
+The CPU is an Epson S1C33 with the C33 PE core: 32-bit RISC, 16 registers,
+fixed 16-bit instructions, `ext` prefixes for large immediates, delayed
+branches. The firmware uses PE-only instructions (single-register
+`push`/`pop`, 0–31 bit shifts) and the PE trap-table base register.
+
+| address | content |
+|---|---|
+| `0x00000000`–`0x00003FFF` | on-chip RAM: variables from `0x300`, interrupt stubs and RAM-resident code at `0x0C00`–`0x1BFF` (copied from the image at reset), stack top `0x4000` |
+| `0x00040000` | interrupt controller |
+| `0x00310000` | USB 2.0 device controller |
+| `0x0037F000`–`0x0037FFFF` | scanner ASIC registers: sensor timing (`0x37F080`), SPI (`0x37F300`), DMA, shading (`0x37F600`), motor (`0x37F800`), GPIO (`0x37FD00`), timers (`0x37FE00`), interrupt flags (`0x37FF00`) |
+| `0x02000000`–`0x021FFFFF` | 2 MiB external RAM: the firmware image, the motor ramp (`0x02010000`), the shading table (`0x02012000`), the image ring buffer, the gamma LUTs and calibration cache (§5.2) |
+
+Peripherals on the board, all driven from the ASIC: the analog front
+end (an 8-bit-register serial device; two different AFE chips are
+supported and told apart by a strap bit), an LED driver (serial), an
+SPI flash, a small Microwire serial EEPROM, the motor driver, the home
+sensor, the four buttons and the power LED.
+
+### 10.2 Command handling
+
+The main loop reads a two-byte opcode from bulk OUT and dispatches it.
+Unknown opcodes get a NAK (`15`). While a carriage move runs, a reduced
+dispatcher keeps answering status and the short set/query commands;
+other commands are held until the move ends.
+
+While image data streams (`1E 47`), the firmware reads opcodes between
+transfers but answers only `1B 03`, `1E 85` and `1E 18`. Every other
+command is read and dropped without a reply. This is why commands sent
+during a pass time out and leave the host out of step (§8.1).
+
+`1E 47` sets up a ring buffer after the shading table: the scanner
+engine writes lines into it by DMA and the USB controller sends each
+transfer by DMA. If the host reads too slowly, the firmware stops the
+sensor, backs the carriage up and resumes when there is room.
+
+### 10.3 Commands not used by Epson's driver
+
+| op | shape | function |
+|---|---|---|
+| `1B 20` / `21` / `22` | S | write a u8 / u16 / u32: u32 address, then the value |
+| `1B 23` / `24` / `25` | SG | read a u8 / u16 / u32 at a u32 address |
+| `1E 45` | S | 1 byte; `10` enters the error state with error code `0x20` (§10.6) |
+| `1E 48`, `1E A8` | | empty handlers |
+| `1E 95` | Q | 128 bytes: the serial EEPROM contents |
+| `1E 98` | A | rewrite the serial EEPROM with built-in defaults and verify them |
+| `1E B0` | Q | 28 bytes of sensor and AFE state |
+| `1E D4` | SG | 1 byte → 12 bytes: raw result of the calibration-mark search |
+| `1E D8` | A | run a home-sensor calibration, reply 2 bytes (state, retries) |
+| `1E D9` | Q | 12 bytes: results of the LED timing sweep at power-on |
+| `1E DE` | S | 1 byte; sets an internal flag (masked out of the status byte) |
+| `1E E3` | S | write an SPI flash field: u16 field, u16 length, data (§10.5) |
+| `1E E4` | SG | read an SPI flash field: u16 field, u16 length |
+
+`1E E3` can rewrite the product ID, product name, serial number and the
+first 24 KiB of the flash. Do not send it.
+
+### 10.4 Power-on sequence
+
+After the upload, the reset handler copies the RAM code, sets up the
+hardware and the USB descriptors, and starts the main loop. The main loop
+then runs a start-up job while status bit `0x02` is set:
+
+1. **Self-calibration.** The firmware runs its own dark pass, AFE offset
+   search, LED exposure search, dark and white reference passes and
+   shading-table computation. It uses the same constants as Epson's host
+   driver (§7.4): AFE window `0x380`–`0x480`, LED targets 211–219,
+   4 white groups and the same shift thresholds. The relaxed AFE window
+   `0x300`–`0x500` mentioned in §7.4 belongs to the second AFE chip.
+   The results are not kept for host scans; the host must calibrate
+   every scan itself.
+2. **White-strip check.** It searches the shaded white strip for a
+   reference mark. If the mark is not found, the device enters the
+   error state with code `0x10`. The mark's offsets are what `1E 87`
+   returns.
+3. **Homing.** Two carriage moves onto and off the home sensor. A
+   failure sets status bit `0x04`.
+4. **LED timing sweep** (first AFE variant only): ten trial readings,
+   one of which is selected; `1E D9` returns them.
+
+This matches the ≈10 s after the upload and the two carriage moves seen
+in §8.1.
+
+### 10.5 SPI flash and EEPROM
+
+The SPI flash (4 KiB sectors) holds:
+
+| flash address | content | `1E E3`/`E4` field |
+|---|---|---|
+| `0x00000`–`0x05FFF` | boot area | `0x100` (write only) |
+| `0x02000` | boot loader, 16 KiB, run after a USB suspend (§10.7) | |
+| `0x10000` | u16 USB product ID | `0x20` (whole block) |
+| `0x10002` | USB product string (UTF-16); `1B 13` takes its product name from here | `0x21` |
+| `0x1002A` | USB serial number string | `0x22` |
+| `0x1003E` | 4 bytes | `0x23` |
+| `0x20000` | u32 scan counter (+1 after every scan that returns home) | `0x05` |
+| `0x20004` | last four error codes | `0x00` |
+| `0x20008` | u32 error count | `0x0A` |
+| `0x21000` | backup copy of `0x20000`, magic `0x55AA55AA` at `0x2100C` | |
+| `0x22004` | 4 bytes (`14 17 43 01` on the tested unit) | `0x0B` |
+
+The firmware's own USB descriptor says product ID `0x013C` (Perfection
+V19). The real ID, product name and serial number are copied from the
+flash at boot, and `1B 13` takes the name from there too. The V19 and the
+V39 therefore most likely run this same firmware file.
+
+The serial EEPROM (64 × 16 bits) holds usage counters that the idle
+loop increments.
+
+### 10.6 Errors
+
+The error state sets status bit `0x80`, sets the power LED to its error
+pattern, writes the code into the flash error history and powers the
+sensor and motor down. Codes seen in the firmware:
+
+| code | cause |
+|---|---|
+| `0x10` | power-on self-calibration failed (white strip / mark not found) |
+| `0x15` | home sensor did not clear when the carriage moved away |
+| `0x16` | home sensor not found when returning home |
+| `0x20` | set by the host with `1E 45 10` |
+
+### 10.7 USB suspend
+
+On a USB suspend the firmware powers the sensor, motor and clocks down
+and halts the CPU. On resume it does not continue: it loads the boot
+loader from the SPI flash and jumps to it. The uploaded firmware is then
+gone, and `1B 03` reads `08 00` again. A host driver must be ready to
+upload the firmware again after the bus was suspended, for example by
+Linux USB autosuspend. The SANE backend uploads the firmware whenever it
+opens the device and finds status `08`.
+
+A loss of VBUS restarts the firmware without reloading it.
 
 ## Method and tools
 
