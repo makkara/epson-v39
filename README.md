@@ -39,6 +39,14 @@ package for it contains the same firmware and scan code as the V39 one.
 To try it, uncomment the `usb 0x04b8 0x013c` line in
 `/etc/sane.d/epsonv39.conf`, and please report the result.
 
+Not supported: the **Perfection V39 II** (and probably the V19 II). It
+needs a different firmware file, `esfw0282.bin` ("GT-S660"), and does
+not work with the V39 firmware. A comparison of the two firmware files
+shows the same USB command set (plus one new command, `1E 44`), but a
+different analog front end and sensor geometry. Supporting it would need
+captures from a real V39 II. If you have one, please open an issue with
+the output of `lsusb` for it.
+
 ## Getting started
 
 You need about five minutes and an internet connection.
